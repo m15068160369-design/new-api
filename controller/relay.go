@@ -345,13 +345,11 @@ func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) b
 	if code >= 200 && code < 300 {
 		return false
 	}
-	if code < 100 || code > 599 {
-		return true
-	}
-	if operation_setting.IsAlwaysSkipRetryCode(openaiErr.GetErrorCode()) {
-		return false
-	}
-	return operation_setting.ShouldRetryByStatusCode(code)
+	// [patch lou] retry on ANY upstream failure status code regardless of value.
+	// Original gated retries via IsAlwaysSkipRetryCode (error-code skip list) and
+	// ShouldRetryByStatusCode (504/524 hardcoded skip + configurable ranges). Now any
+	// non-2xx status retries until the common.RetryTimes budget is exhausted.
+	return true
 }
 
 func processChannelError(c *gin.Context, channelError types.ChannelError, err *types.NewAPIError) {

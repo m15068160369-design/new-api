@@ -115,6 +115,8 @@ func assignDisplayLogIds(logs []*Log, startIdx int) {
 
 func formatUserLogs(logs []*Log, startIdx int) {
 	for i := range logs {
+		// [patch lou] hide channel id from non-admin users (admin views use GetAllLogs, untouched)
+		logs[i].ChannelId = 0
 		logs[i].ChannelName = ""
 		var otherMap map[string]interface{}
 		otherMap, _ = common.StrToMap(logs[i].Other)
@@ -125,6 +127,15 @@ func formatUserLogs(logs []*Log, startIdx int) {
 			delete(otherMap, "audit_info")
 			// delete(otherMap, "reject_reason")
 			delete(otherMap, "stream_status")
+			// [patch lou] hide model mapping & channel details from non-admin users
+			delete(otherMap, "upstream_model_name")
+			delete(otherMap, "is_model_mapped")
+			delete(otherMap, "channel_id")
+			delete(otherMap, "channel_name")
+			delete(otherMap, "channel_type")
+			delete(otherMap, "error_type")
+			delete(otherMap, "error_code")
+			delete(otherMap, "status_code")
 		}
 		logs[i].Other = common.MapToJsonStr(otherMap)
 	}
@@ -568,6 +579,10 @@ func GetUserLogs(userId int, logType int, startTimestamp int64, endTimestamp int
 	} else {
 		tx = LOG_DB.Where("logs.user_id = ? and logs.type = ?", userId, logType)
 	}
+	// [patch lou] hide intermediate failure logs: a failed attempt (type=5) whose request_id
+	// was later satisfied by a successful retry (type=2 with larger id) is an internal
+	// process detail, not shown to non-admin users. Final failures (no later success) remain.
+	tx = tx.Where("NOT (logs.type = ? AND logs.request_id != '' AND EXISTS (SELECT 1 FROM logs l2 WHERE l2.request_id = logs.request_id AND l2.type = ? AND l2.id > logs.id))", LogTypeError, LogTypeConsume)
 
 	if tx, err = applyExplicitLogTextFilter(tx, "logs.model_name", modelName); err != nil {
 		return nil, 0, err
