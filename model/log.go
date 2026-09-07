@@ -136,6 +136,8 @@ func formatUserLogs(logs []*Log, startIdx int) {
 			delete(otherMap, "error_type")
 			delete(otherMap, "error_code")
 			delete(otherMap, "status_code")
+		// [patch lou] strip intermediate-failure marker from any user-visible row
+		delete(otherMap, "is_intermediate")
 		}
 		logs[i].Other = common.MapToJsonStr(otherMap)
 	}
@@ -583,6 +585,11 @@ func GetUserLogs(userId int, logType int, startTimestamp int64, endTimestamp int
 	// was later satisfied by a successful retry (type=2 with larger id) is an internal
 	// process detail, not shown to non-admin users. Final failures (no later success) remain.
 	tx = tx.Where("NOT (logs.type = ? AND logs.request_id != '' AND EXISTS (SELECT 1 FROM logs l2 WHERE l2.request_id = logs.request_id AND l2.type = ? AND l2.id > logs.id))", LogTypeError, LogTypeConsume)
+	// [patch lou] source-level: intermediate failures (willRetry=true at write
+	// time) carry is_intermediate:true in `other` JSON. Hide from user view
+	// regardless of whether the later success has landed yet — eliminates the
+	// query-time window. Admin's GetAllLogs is unfiltered, admin sees every attempt.
+	tx = tx.Where("NOT (logs.type = ? AND logs.other LIKE ?)", LogTypeError, `%"is_intermediate":true%`)
 
 	if tx, err = applyExplicitLogTextFilter(tx, "logs.model_name", modelName); err != nil {
 		return nil, 0, err
