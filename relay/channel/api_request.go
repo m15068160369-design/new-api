@@ -482,6 +482,8 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 		if err != nil {
 			return nil, fmt.Errorf("new proxy http client failed: %w", err)
 		}
+	} else if info.IsStream {
+		client = service.GetStreamHttpClient()
 	} else {
 		client = service.GetHttpClient()
 	}

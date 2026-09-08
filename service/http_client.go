@@ -17,6 +17,7 @@ import (
 
 var (
 	httpClient              *http.Client
+	streamHttpClient        *http.Client
 	ssrfProtectedHTTPClient *http.Client
 	proxyClientLock         sync.Mutex
 	proxyClients            = make(map[string]*http.Client)
@@ -54,28 +55,42 @@ func ValidateSSRFProtectedFetchURL(urlStr string) error {
 }
 
 func InitHttpClient() {
-	transport := &http.Transport{
-		MaxIdleConns:        common.RelayMaxIdleConns,
-		MaxIdleConnsPerHost: common.RelayMaxIdleConnsPerHost,
-		IdleConnTimeout:     time.Duration(common.RelayIdleConnTimeout) * time.Second,
-		ForceAttemptHTTP2:   true,
-		Proxy:               http.ProxyFromEnvironment, // Support HTTP_PROXY, HTTPS_PROXY, NO_PROXY env vars
+	// 非流式：等首字节（=整个响应生成完成）超 150s 断→DoRequestFailed(500)→重试换渠道
+	// 150s = 正常大输出上限 120s(6508tok@54tps实测) + 30s 余量，零误杀正常请求
+	nonStreamTransport := &http.Transport{
+		MaxIdleConns:           common.RelayMaxIdleConns,
+		MaxIdleConnsPerHost:    common.RelayMaxIdleConnsPerHost,
+		IdleConnTimeout:        time.Duration(common.RelayIdleConnTimeout) * time.Second,
+		ResponseHeaderTimeout:  150 * time.Second,
+		ForceAttemptHTTP2:      true,
+		Proxy:                  http.ProxyFromEnvironment, // Support HTTP_PROXY, HTTPS_PROXY, NO_PROXY env vars
+	}
+	// 流式：等首字节超 60s 断（首字节正常秒级返回，60s 仅掐挂起，零误杀）
+	// 刻意不设 client.Timeout：流式总时长不受限，吐字间隔由 STREAMING_TIMEOUT 管
+	streamTransport := &http.Transport{
+		MaxIdleConns:           common.RelayMaxIdleConns,
+		MaxIdleConnsPerHost:    common.RelayMaxIdleConnsPerHost,
+		IdleConnTimeout:        time.Duration(common.RelayIdleConnTimeout) * time.Second,
+		ResponseHeaderTimeout:  60 * time.Second,
+		ForceAttemptHTTP2:      true,
+		Proxy:                  http.ProxyFromEnvironment,
 	}
 	if common.TLSInsecureSkipVerify {
-		transport.TLSClientConfig = common.InsecureTLSConfig
+		nonStreamTransport.TLSClientConfig = common.InsecureTLSConfig
+		streamTransport.TLSClientConfig = common.InsecureTLSConfig
 	}
 
-	if common.RelayTimeout == 0 {
-		httpClient = &http.Client{
-			Transport:     transport,
-			CheckRedirect: checkRedirect,
-		}
-	} else {
-		httpClient = &http.Client{
-			Transport:     transport,
-			Timeout:       time.Duration(common.RelayTimeout) * time.Second,
-			CheckRedirect: checkRedirect,
-		}
+	httpClient = &http.Client{
+		Transport:     nonStreamTransport,
+		CheckRedirect: checkRedirect,
+	}
+	if common.RelayTimeout != 0 {
+		httpClient.Timeout = time.Duration(common.RelayTimeout) * time.Second
+	}
+	streamHttpClient = &http.Client{
+		Transport:     streamTransport,
+		CheckRedirect: checkRedirect,
+		// 不设 Timeout：流式长输出不受总时长限制，仅受首字节RHT(60s)与chunk间隔STREAMING_TIMEOUT约束
 	}
 	ssrfProtectedHTTPClient = newProtectedFetchHTTPClient()
 }
@@ -89,6 +104,13 @@ func InitHttpClient() {
 // ValidateSSRFProtectedFetchURL instead.
 func GetHttpClient() *http.Client {
 	return httpClient
+}
+
+// GetStreamHttpClient 返回流式请求专用的出站客户端。
+// 首字节超时60s（仅掐等首字节挂起，不误杀长流式输出）；无 client.Timeout 总时长限制，
+// 吐字间隔由 STREAMING_TIMEOUT 约束。
+func GetStreamHttpClient() *http.Client {
+	return streamHttpClient
 }
 
 // GetSSRFProtectedHTTPClient 返回带拨号时 SSRF 校验的客户端。
