@@ -55,13 +55,12 @@ func ValidateSSRFProtectedFetchURL(urlStr string) error {
 }
 
 func InitHttpClient() {
-	// 非流式：等首字节（=整个响应生成完成）超 150s 断→DoRequestFailed(500)→重试换渠道
-	// 150s = 正常大输出上限 120s(6508tok@54tps实测) + 30s 余量，零误杀正常请求
+	// 非流式：不设首字节超时(RHT=0)，保持原状不主动切，靠上游自断/客户端超时
+	// 理由：非流占31%先不动观察；流式占69%收益大(RHT60s+STREAMING_TIMEOUT30)零误杀
 	nonStreamTransport := &http.Transport{
 		MaxIdleConns:           common.RelayMaxIdleConns,
 		MaxIdleConnsPerHost:    common.RelayMaxIdleConnsPerHost,
 		IdleConnTimeout:        time.Duration(common.RelayIdleConnTimeout) * time.Second,
-		ResponseHeaderTimeout:  150 * time.Second,
 		ForceAttemptHTTP2:      true,
 		Proxy:                  http.ProxyFromEnvironment, // Support HTTP_PROXY, HTTPS_PROXY, NO_PROXY env vars
 	}
