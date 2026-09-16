@@ -11,6 +11,7 @@ import (
 	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/types"
 
 	"github.com/gin-gonic/gin"
@@ -739,4 +740,31 @@ func TestCalculateTextQuotaSummaryFixedPriceAppliesImageCountOnceAndAllowsOverri
 	relayInfo.PriceData.AddOtherRatio("n", 2)
 	summary = calculateTextQuotaSummary(ctx, relayInfo, usage)
 	require.Equal(t, 120000, summary.Quota)
+}
+
+func TestIsChatCompletionRelay(t *testing.T) {
+	// [lou-patch] 输出为 0 不计费补丁的模式判定矩阵
+	cases := []struct {
+		name string
+		mode int
+		want bool
+	}{
+		{"OpenAI chat completions", relayconstant.RelayModeChatCompletions, true},
+		{"OpenAI legacy completions", relayconstant.RelayModeCompletions, true},
+		{"OpenAI responses API", relayconstant.RelayModeResponses, true},
+		{"Claude native /v1/messages falls to Unknown", relayconstant.RelayModeUnknown, true},
+		{"embeddings excluded", relayconstant.RelayModeEmbeddings, false},
+		{"moderations excluded", relayconstant.RelayModeModerations, false},
+		{"images generations excluded", relayconstant.RelayModeImagesGenerations, false},
+		{"rerank excluded", relayconstant.RelayModeRerank, false},
+		{"gemini native excluded", relayconstant.RelayModeGemini, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			info := &relaycommon.RelayInfo{RelayMode: tc.mode}
+			require.Equal(t, tc.want, isChatCompletionRelay(info))
+		})
+	}
+	// nil 安全
+	require.False(t, isChatCompletionRelay(nil))
 }

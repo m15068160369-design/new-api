@@ -13,6 +13,7 @@ import (
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
 	perfmetrics "github.com/QuantumNous/new-api/pkg/perf_metrics"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/types"
 
@@ -334,6 +335,26 @@ func calculateTextQuotaSummary(ctx *gin.Context, relayInfo *relaycommon.RelayInf
 	return summary
 }
 
+// isChatCompletionRelay 判断本次中继是否为「聊天补全类」请求。
+// RelayModeChatCompletions/Completions 覆盖 OpenAI 端点；RelayModeResponses 覆盖
+// OpenAI Responses API；RelayModeUnknown 兜住 Claude 原生 /v1/messages（Path2RelayMode
+// 不识别该前缀，distributor 也不为其设置 relay_mode）。
+// 刻意不包含：Embeddings/Images/Moderations/Edits/Rerank/Audio/Realtime/Gemini——
+// 这些模式 completion 恒为 0 或非聊天语义，无条件免单会把它们全部免费。
+func isChatCompletionRelay(relayInfo *relaycommon.RelayInfo) bool {
+	if relayInfo == nil {
+		return false
+	}
+	switch relayInfo.RelayMode {
+	case relayconstant.RelayModeChatCompletions,
+		relayconstant.RelayModeCompletions,
+		relayconstant.RelayModeResponses,
+		relayconstant.RelayModeUnknown:
+		return true
+	}
+	return false
+}
+
 func usageSemanticFromUsage(relayInfo *relaycommon.RelayInfo, usage *dto.Usage) string {
 	if usage != nil && usage.UsageSemantic != "" {
 		return usage.UsageSemantic
@@ -386,6 +407,16 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 	}
 	if summary.ImageGenerationCallPrice > 0 {
 		extraContent = append(extraContent, fmt.Sprintf("Image Generation Call 花费 %s", decimal.NewFromFloat(summary.ImageGenerationCallPrice).Mul(decimal.NewFromFloat(summary.GroupRatio)).Mul(decimal.NewFromFloat(common.QuotaPerUnit)).String()))
+	}
+
+	// [lou-patch] 输出为 0 的聊天请求不计费：上游没吐任何内容 = 客户没拿到东西，
+	// 实扣强制归 0（预扣费用由 SettleBilling 全额退还）。
+	// 仅对聊天类请求生效（含 Claude 原生 /v1/messages 落 RelayModeUnknown）；
+	// embedding / 图片生成 / 审核 / rerank 等 completion 恒为 0 的模式不受影响。
+	// 口径：completion_tokens 含思考 token（OpenAI 口径），思考有产出 >0 照常计费。
+	if isChatCompletionRelay(relayInfo) && summary.CompletionTokens == 0 && summary.TotalTokens > 0 {
+		summary.Quota = 0
+		extraContent = append(extraContent, "输出 token 为 0，本次不计费")
 	}
 
 	if summary.TotalTokens == 0 {
