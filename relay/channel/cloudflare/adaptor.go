@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/relay/channel"
@@ -34,22 +35,50 @@ func (a *Adaptor) ConvertClaudeRequest(*gin.Context, *relaycommon.RelayInfo, *dt
 func (a *Adaptor) Init(info *relaycommon.RelayInfo) {
 }
 
+// [patch lou #5] splitCfKey: per-key account id for Cloudflare multi-key channels.
+// Key line format "ACCOUNT_ID----API_TOKEN" (4-dash, as shipped by key sellers) or
+// "ACCOUNT_ID---API_TOKEN" (3-dash). Returns empty accountID for plain tokens so
+// the channel-level Account ID field (legacy path) still applies.
+// Package-private on purpose: this format is a Cloudflare-only convention and must
+// never leak into other channel types (their keys may legitimately contain dashes).
+func splitCfKey(key string) (accountID, token string) {
+	key = strings.TrimSpace(key)
+	for _, sep := range []string{"----", "---"} {
+		if i := strings.Index(key, sep); i > 0 && i+len(sep) < len(key) {
+			acc := strings.TrimSpace(key[:i])
+			tok := strings.TrimSpace(key[i+len(sep):])
+			if acc != "" && tok != "" {
+				return acc, tok
+			}
+		}
+	}
+	return "", key
+}
+
 func (a *Adaptor) GetRequestURL(info *relaycommon.RelayInfo) (string, error) {
+	// [patch lou #5] account id: per-key "ACCOUNT----TOKEN" line wins, then
+	// channel-level Account ID (stored in Other -> ApiVersion), unchanged legacy path.
+	account := info.ApiVersion
+	if acc, _ := splitCfKey(info.ApiKey); acc != "" {
+		account = acc
+	}
 	switch info.RelayMode {
 	case constant.RelayModeChatCompletions:
-		return fmt.Sprintf("%s/client/v4/accounts/%s/ai/v1/chat/completions", info.ChannelBaseUrl, info.ApiVersion), nil
+		return fmt.Sprintf("%s/client/v4/accounts/%s/ai/v1/chat/completions", info.ChannelBaseUrl, account), nil
 	case constant.RelayModeEmbeddings:
-		return fmt.Sprintf("%s/client/v4/accounts/%s/ai/v1/embeddings", info.ChannelBaseUrl, info.ApiVersion), nil
+		return fmt.Sprintf("%s/client/v4/accounts/%s/ai/v1/embeddings", info.ChannelBaseUrl, account), nil
 	case constant.RelayModeResponses:
-		return fmt.Sprintf("%s/client/v4/accounts/%s/ai/v1/responses", info.ChannelBaseUrl, info.ApiVersion), nil
+		return fmt.Sprintf("%s/client/v4/accounts/%s/ai/v1/responses", info.ChannelBaseUrl, account), nil
 	default:
-		return fmt.Sprintf("%s/client/v4/accounts/%s/ai/run/%s", info.ChannelBaseUrl, info.ApiVersion, info.UpstreamModelName), nil
+		return fmt.Sprintf("%s/client/v4/accounts/%s/ai/run/%s", info.ChannelBaseUrl, account, info.UpstreamModelName), nil
 	}
 }
 
 func (a *Adaptor) SetupRequestHeader(c *gin.Context, req *http.Header, info *relaycommon.RelayInfo) error {
 	channel.SetupApiRequestHeader(info, c, req)
-	req.Set("Authorization", fmt.Sprintf("Bearer %s", info.ApiKey))
+	// [patch lou #5] strip ACCOUNT_ID---- prefix if present; plain keys pass through unchanged.
+	_, token := splitCfKey(info.ApiKey)
+	req.Set("Authorization", fmt.Sprintf("Bearer %s", token))
 	return nil
 }
 
