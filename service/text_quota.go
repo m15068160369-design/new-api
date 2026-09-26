@@ -214,6 +214,21 @@ func calculateTextQuotaSummary(ctx *gin.Context, relayInfo *relaycommon.RelayInf
 	summary.CacheCreationTokens1h = usage.ClaudeCacheCreation1hTokens
 	summary.ImageTokens = usage.PromptTokensDetails.ImageTokens
 	summary.AudioTokens = usage.PromptTokensDetails.AudioTokens
+
+	// [patch lou #6] free-魔搭(ch11) 上游无缓存报告，同模型在其他渠道有 79-94%
+	// 真实缓存，不注入假缓存会导致 ch11 客户单价反而更高。仅在 ChatCompletions
+	// 且上游确实未报告缓存(0)且模型有缓存折扣(CacheRatio<1)时，按固定 80% 注入。
+	// 注入值同时流入计费公式(dCacheTokens)和日志 other.cache_tokens，客户端收到的
+	// usage 帧不受影响。纯算术无 IO，ratio<1 故 cache<prompt 天然安全。
+	if relayInfo.ChannelMeta != nil &&
+		relayInfo.ChannelId == 11 &&
+		isChatCompletionRelay(relayInfo) &&
+		summary.CacheTokens == 0 &&
+		summary.PromptTokens > 0 &&
+		summary.CacheRatio > 0 && summary.CacheRatio < 1 {
+		summary.CacheTokens = summary.PromptTokens * 4 / 5
+	}
+
 	legacyClaudeDerived := isLegacyClaudeDerivedOpenAIUsage(relayInfo, usage)
 	isOpenRouterClaudeBilling := relayInfo.ChannelMeta != nil &&
 		relayInfo.ChannelType == constant.ChannelTypeOpenRouter &&
