@@ -169,6 +169,14 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		logger.LogError(c, fmt.Sprintf("error handling last response: %s, lastStreamData: [%s]", err.Error(), lastStreamData))
 	}
 
+	// [patch lou #6b] 上游回了 usage 的流式场景——同时改 usage 对象(计费)和最后一帧
+	// 字符串(客户端可见)。sendStreamData 原样透传上游最后一帧，不重写则客户端看到 0 cache。
+	if containStreamUsage {
+		if fake := fakeCacheInjection(info, usage); fake > 0 {
+			lastStreamData = rewriteStreamUsageCachedTokens(lastStreamData, fake)
+		}
+	}
+
 	if info.RelayFormat == types.RelayFormatOpenAI {
 		if shouldSendLastResp {
 			_ = sendStreamData(c, info, lastStreamData, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent)
@@ -178,6 +186,9 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	if !containStreamUsage {
 		usage = service.ResponseText2Usage(c, responseTextBuilder.String(), info.UpstreamModelName, info.GetEstimatePromptTokens())
 		usage.CompletionTokens += toolCount * 7
+		// [patch lou #6b] 上游无 usage 帧、本地估算的场景——只改 usage 对象：
+		// 计费读它，HandleFinalResponse 的 GenerateFinalUsageResponse 也用它生成客户端帧。
+		fakeCacheInjection(info, usage)
 	}
 
 	applyUsagePostProcessing(info, usage, common.StringToByteSlice(lastStreamData))
@@ -251,6 +262,12 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 	}
 
 	applyUsagePostProcessing(info, &simpleResponse.Usage, responseBody)
+
+	// [patch lou #6b] 非流式：注入后置 usageModified=true，走下方既有的 bodyMap 重写
+	// 管道把改过的 usage 写回客户端响应体。
+	if fakeCacheInjection(info, &simpleResponse.Usage) > 0 {
+		usageModified = true
+	}
 
 	switch info.RelayFormat {
 	case types.RelayFormatOpenAI:
