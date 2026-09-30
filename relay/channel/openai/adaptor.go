@@ -354,6 +354,15 @@ func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayIn
 				request.Messages[0].Role = "developer"
 			}
 		}
+	} else {
+		// [patch lou #7] 非OpenAI推理模型：上游不认 developer role，客户端发来的 developer 统一降级为 system
+		// 背景：GLM/魔搭等上游校验 role ∈ {system,assistant,user,tool,function}，收到 developer 直接 400
+		// 语义：两条 system 上游接受（实测 202/200）；仅改 role 字符串，content 零改动
+		for i := range request.Messages {
+			if request.Messages[i].Role == "developer" {
+				request.Messages[i].Role = "system"
+			}
+		}
 	}
 
 	return request, nil
