@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -356,10 +357,61 @@ func updateChannelMoonshotBalance(channel *model.Channel) (float64, error) {
 	return availableBalanceUsd, nil
 }
 
+// [patch lou #8] ClinePass balance: channels whose name contains "cline" fetch
+// the monthly usage-limits endpoint and report remaining monthly quota as CNY.
+// percentUsed is the used percentage of the monthly inference cap; the balance
+// field stores (100-percentUsed)/100 * monthlyCapUSD * cnyRate (remaining CNY).
+type ClineUsageLimitsResponse struct {
+	Success bool `json:"success"`
+	Data struct {
+		Limits []struct {
+			Type        string  `json:"type"`
+			PercentUsed float64 `json:"percentUsed"`
+			ResetsAt    string  `json:"resetsAt"`
+		} `json:"limits"`
+	} `json:"data"`
+}
+
+func updateChannelClineBalance(channel *model.Channel) (float64, error) {
+	baseURL := strings.TrimSuffix(channel.GetBaseURL(), "/")
+	url := fmt.Sprintf("%s/v1/users/me/plan/usage-limits", baseURL)
+	body, err := GetResponseBody("GET", url, channel, GetAuthHeader(channel.Key))
+	if err != nil {
+		return 0, err
+	}
+	response := ClineUsageLimitsResponse{}
+	err = common.Unmarshal(body, &response)
+	if err != nil {
+		return 0, err
+	}
+	if !response.Success {
+		return 0, fmt.Errorf("cline usage-limits response success=false")
+	}
+	var monthlyPercentUsed *float64
+	for i := range response.Data.Limits {
+		if response.Data.Limits[i].Type == "monthly" {
+			monthlyPercentUsed = &response.Data.Limits[i].PercentUsed
+			break
+		}
+	}
+	if monthlyPercentUsed == nil {
+		return 0, fmt.Errorf("cline usage-limits response missing monthly limit")
+	}
+	// remaining = (100 - percentUsed)/100 * $50 monthly cap * 7 CNY/USD
+	balance := (100-*monthlyPercentUsed)/100*50*7
+	channel.UpdateBalance(balance)
+	return balance, nil
+}
+
 func updateChannelBalance(channel *model.Channel) (float64, error) {
 	baseURL := constant.ChannelBaseURLs[channel.Type]
 	if channel.GetBaseURL() == "" {
 		channel.BaseURL = &baseURL
+	}
+	// [patch lou #8] ClinePass channels (name contains "cline") use the
+	// usage-limits endpoint instead of the OpenAI billing endpoints.
+	if strings.Contains(strings.ToLower(channel.Name), "cline") {
+		return updateChannelClineBalance(channel)
 	}
 	switch channel.Type {
 	case constant.ChannelTypeOpenAI:
