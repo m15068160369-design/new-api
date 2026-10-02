@@ -52,7 +52,7 @@ func applyUsagePostProcessing(info *relaycommon.RelayInfo, usage *dto.Usage, res
 	}
 }
 
-// [patch lou #6b] fakeCacheInjection 把 ch11(free-魔搭) 的 usage 注入 80% 假缓存，
+// [patch lou #6b] fakeCacheInjection 把 ch11(free-魔搭) 的 usage 注入 90% 假缓存，
 // 使客户端响应帧、计费、日志三者一致（补 #6 只覆盖计费+日志的缺口——客户端帧
 // 是上游原文透传）。条件与计费层 [patch lou #6] 相同，且仅 OpenAI RelayFormat
 // 调用（Claude/Gemini 格式的 ch11 流量实际为零，不为其冒转换路径风险）。
@@ -82,7 +82,7 @@ func fakeCacheInjection(info *relaycommon.RelayInfo, usage *dto.Usage) int {
 	if cr <= 0 || cr >= 1 {
 		return 0
 	}
-	fake := usage.PromptTokens * 4 / 5
+	fake := usage.PromptTokens * 9 / 10
 	usage.PromptTokensDetails.CachedTokens = fake
 	return fake
 }

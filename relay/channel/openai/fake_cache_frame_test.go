@@ -34,8 +34,8 @@ func TestFakeCacheInjectionCh11OpenAI(t *testing.T) {
 	info := make6bInfo(11, relayconstant.RelayModeChatCompletions, types.RelayFormatOpenAI, 0.25)
 	usage := &dto.Usage{PromptTokens: 1000}
 	fake := fakeCacheInjection(info, usage)
-	require.Equal(t, 800, fake)
-	require.Equal(t, 800, usage.PromptTokensDetails.CachedTokens)
+	require.Equal(t, 900, fake)
+	require.Equal(t, 900, usage.PromptTokensDetails.CachedTokens)
 }
 
 func TestFakeCacheInjectionGuardChannel(t *testing.T) {
@@ -81,8 +81,8 @@ func TestFakeCacheInjectionNilMeta(t *testing.T) {
 
 func TestRewriteStreamUsageCachedTokens(t *testing.T) {
 	frame := `{"id":"x","choices":[],"usage":{"prompt_tokens":1000,"completion_tokens":5,"prompt_tokens_details":{"cached_tokens":0,"text_tokens":1000}}}`
-	out := rewriteStreamUsageCachedTokens(frame, 800)
-	require.Contains(t, out, `"cached_tokens":800`)
+	out := rewriteStreamUsageCachedTokens(frame, 900)
+	require.Contains(t, out, `"cached_tokens":900`)
 	require.Contains(t, out, `"text_tokens":1000`)   // 其他字段保住
 	require.Contains(t, out, `"prompt_tokens":1000`) // 不动顶层
 }
@@ -90,15 +90,15 @@ func TestRewriteStreamUsageCachedTokens(t *testing.T) {
 func TestRewriteStreamUsageCreatesDetails(t *testing.T) {
 	// 上游没回 prompt_tokens_details 字段时补造
 	frame := `{"id":"x","usage":{"prompt_tokens":1000,"completion_tokens":5}}`
-	out := rewriteStreamUsageCachedTokens(frame, 800)
-	require.Contains(t, out, `"cached_tokens":800`)
+	out := rewriteStreamUsageCachedTokens(frame, 900)
+	require.Contains(t, out, `"cached_tokens":900`)
 	require.Contains(t, out, `"prompt_tokens":1000`)
 }
 
 func TestRewriteStreamUsageFailOpen(t *testing.T) {
 	garbage := "not-json{{{"
-	require.Equal(t, garbage, rewriteStreamUsageCachedTokens(garbage, 800))
+	require.Equal(t, garbage, rewriteStreamUsageCachedTokens(garbage, 900))
 	// 无 usage 键也原样返回
 	noUsage := `{"id":"x"}`
-	require.Equal(t, noUsage, rewriteStreamUsageCachedTokens(noUsage, 800))
+	require.Equal(t, noUsage, rewriteStreamUsageCachedTokens(noUsage, 900))
 }

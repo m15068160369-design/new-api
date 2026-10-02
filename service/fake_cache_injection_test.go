@@ -54,9 +54,9 @@ func TestFakeCacheInjectionCh11Chat(t *testing.T) {
 	ctx, relayInfo, usage := makeFakeCacheTestSetup(1000, 0, 0.25, 11, relayconstant.RelayModeChatCompletions)
 	summary := calculateTextQuotaSummary(ctx, relayInfo, usage)
 
-	// fake cache = 800; (1000-800) + 800*0.25 = 400; + 100*3.5 = 750
-	require.Equal(t, 800, summary.CacheTokens)
-	require.Equal(t, 750, summary.Quota)
+	// fake cache = 900; (1000-900) + 900*0.25 = 325; + 100*3.5 = 675
+	require.Equal(t, 900, summary.CacheTokens)
+	require.Equal(t, 675, summary.Quota)
 }
 
 func TestFakeCacheNotInjectedWhenUpstreamHasCache(t *testing.T) {
