@@ -912,6 +912,36 @@ type ChannelStatusBatchRequest struct {
 	Status int   `json:"status"`
 }
 
+// [patch lou #10] mergeChannelSetting 以 origin（DB 原值）为基底做字段级浅合并：
+// incoming 里出现的字段覆盖同名字段，未出现的字段保留 origin 的值。
+// 用 json.RawMessage 保持各字段值原样透传（不重构类型、不丢精度）。
+// 典型场景：Web UI 编辑渠道提交默认 setting 模板（不含后端自定义字段如 hedging_*），
+// 合并后自定义字段保留不被覆盖；API 传完整 setting 或显式传某字段值时照常生效。
+func mergeChannelSetting(origin, incoming string) (string, error) {
+	if origin == "" {
+		return incoming, nil
+	}
+	if incoming == "" {
+		return origin, nil
+	}
+	var base map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(origin), &base); err != nil {
+		return "", fmt.Errorf("parse origin setting: %w", err)
+	}
+	var overlay map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(incoming), &overlay); err != nil {
+		return "", fmt.Errorf("parse incoming setting: %w", err)
+	}
+	for k, v := range overlay {
+		base[k] = v
+	}
+	merged, err := json.Marshal(base)
+	if err != nil {
+		return "", err
+	}
+	return string(merged), nil
+}
+
 func UpdateChannel(c *gin.Context) {
 	channel := PatchChannel{}
 	rawBody, err := c.GetRawData()
@@ -959,6 +989,21 @@ func UpdateChannel(c *gin.Context) {
 		!authz.Can(c.GetInt("id"), c.GetInt("role"), authz.ChannelSensitiveWrite) {
 		common.ApiErrorI18n(c, i18n.MsgAuthInsufficientPrivilege)
 		return
+	}
+
+	// [patch lou #10] setting 字段级合并保留：以 DB 原值为基底，body 携带的字段覆盖同名项、
+	// 未携带的字段保留原值。防止 Web UI 默认模板（不含后端自定义字段如 hedging_*）把
+	// 完整配置覆盖回默认。明示更新仍可全量生效（API 传完整 setting 或显式传某字段值）。
+	// 敏感判定已在上方按原始 body 完成，合并不影响权限门槛语义。
+	if channel.Setting != nil && *channel.Setting != "" {
+		originSetting := ""
+		if originChannel.Setting != nil {
+			originSetting = *originChannel.Setting
+		}
+		if merged, mergeErr := mergeChannelSetting(originSetting, *channel.Setting); mergeErr == nil {
+			channel.Setting = &merged
+		}
+		// 合并失败（JSON 非法）不阻断更新，保持官方原语义（原样写入，由校验层兜底）
 	}
 
 	// If the request explicitly specifies a new MultiKeyMode, apply it on top of the original info.
