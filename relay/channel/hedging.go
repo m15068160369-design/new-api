@@ -22,7 +22,6 @@ package channel
 import (
 	"bufio"
 	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -203,12 +202,23 @@ func hedgeNextKey(info *common.RelayInfo) string {
 	return key
 }
 
+// hedgeCloneInfo 为补发路克隆一份 RelayInfo（RelayInfo 值拷贝 + ChannelMeta 一层深拷贝），
+// 换上 freshKey。两路 goroutine 并发发送时各持独立副本，消除对共享 info.ApiKey 的并发写。
+func hedgeCloneInfo(info *common.RelayInfo, freshKey string) *common.RelayInfo {
+	cloneInfo := *info
+	cloneMeta := *info.ChannelMeta
+	if freshKey != "" {
+		cloneMeta.ApiKey = freshKey
+	}
+	cloneInfo.ChannelMeta = &cloneMeta
+	return &cloneInfo
+}
+
 // hedgeSendOnce 构造并发送单路请求（复用 DoApiRequest 原构造链）。
-// freshKey 非空时临时替换 info.ApiKey 走一遍 SetupRequestHeader，构造完立即恢复。
-// headerTimeout > 0 时给「等响应头」阶段设上限：超时未回响应头（拥塞 hold header 场景）
-// 则 cancel 该路按快失败处理；响应头回来后 timer 停止、ctx 保持活跃，
-// 流读不受影响（ctx 父为 Background，永不显式 cancel 亦无泄漏；该路终局由 resp.Body.Close 断流）。
-func hedgeSendOnce(a Adaptor, c *gin.Context, info *common.RelayInfo, body []byte, freshKey string, headerTimeout time.Duration) (*http.Response, error) {
+// info 只读（补发路传 hedgeCloneInfo 的克隆副本）。
+// 注意：本函数可阻塞在等响应头最多 60s（请求级超时），调用方必须异步调用
+// （goroutine），让主循环的 delay timer 与本路的 header 等待并行。
+func hedgeSendOnce(a Adaptor, c *gin.Context, info *common.RelayInfo, body []byte) (*http.Response, error) {
 	fullRequestURL, err := a.GetRequestURL(info)
 	if err != nil {
 		return nil, fmt.Errorf("get request url failed: %w", err)
@@ -218,70 +228,33 @@ func hedgeSendOnce(a Adaptor, c *gin.Context, info *common.RelayInfo, body []byt
 		return nil, fmt.Errorf("new request failed: %w", err)
 	}
 	req.ContentLength = int64(len(body))
-	var timer *time.Timer
-	var cancel context.CancelFunc
-	if headerTimeout > 0 {
-		var ctx context.Context
-		ctx, cancel = context.WithCancel(context.Background())
-		timer = time.AfterFunc(headerTimeout, cancel)
-		req = req.WithContext(ctx)
-	}
 	headers := req.Header
-	origKey := info.ApiKey
-	if freshKey != "" {
-		info.ApiKey = freshKey
-	}
 	err = a.SetupRequestHeader(c, &headers, info)
-	if freshKey != "" {
-		info.ApiKey = origKey
-	}
 	if err != nil {
-		if timer != nil {
-			timer.Stop()
-		}
-		if cancel != nil {
-			cancel()
-		}
 		return nil, fmt.Errorf("setup request header failed: %w", err)
 	}
 	headerOverride, err := processHeaderOverride(info, c)
 	if err != nil {
-		if timer != nil {
-			timer.Stop()
-		}
-		if cancel != nil {
-			cancel()
-		}
 		return nil, err
 	}
 	applyHeaderOverrideToRequest(req, headerOverride)
-	resp, err := doRequest(c, req, info)
-	if timer != nil {
-		timer.Stop()
-	}
-	if err != nil {
-		if cancel != nil {
-			cancel()
-		}
-		return nil, err
-	}
-	// 响应头已回：解除超时保护，ctx 保持活跃供下游流读
-	_ = cancel // vet: 显式保留引用；Background 父 ctx 不 cancel 无泄漏
-	return resp, nil
+	return doRequest(c, req, info)
 }
 
 // hedgedDoApiRequest 对冲主循环。delays 为绝对时刻（自请求发起）。
+// 发送异步化：每路的「发送（含等响应头，可阻塞 60s）→ 非200 短 body 探读 → peek 首字」
+// 全在各自 goroutine 里跑，主循环的 delay timer 不被任何路的 header 等待阻塞——
+// 第一档到点立即补发下一路，先前的路继续在途，真并发竞速（不杀先发路，
+// 不丢它的排队进度）。
 // 触发下一路条件（任一）：delays[di] 到点仍无胜者 / 任一路已废（快失败立即补）。
 // 任一路 found 即胜出；全部发完且全废则返回最有信息量的失败
 // （优先带 body 的非 200 响应，其次最后一个错误）。
 func hedgedDoApiRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, body []byte) (*http.Response, error) {
 	delays := hedgeDelays(info)
-	// 响应头等待上限 = 第一档 delay：拥塞 hold header（60s 级）场景快速止损补路，
-	// 不让路1死锁在 client.Do 等满 60s 请求级超时
-	headerTimeout := delays[0]
 	t0 := time.Now()
 	eventCh := make(chan hedgeEvent, len(delays)+1)
 	routes := make([]*hedgeRoute, 0, len(delays)+1)
+	done := make(chan struct{}) // 终局信号：在途路的 goroutine 据此自行关闭止损
 
 	failedResp := (*http.Response)(nil) // 全败时优先返回的非 200 响应（已拼回流）
 	lastErr := error(nil)
@@ -294,29 +267,33 @@ func hedgedDoApiRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, body 
 		if idx > 0 {
 			freshKey = hedgeNextKey(info)
 		}
-		resp, err := hedgeSendOnce(a, c, info, body, freshKey, headerTimeout)
-		if err != nil {
-			logger.LogDebug(c, "[hedging] route %d send failed: %s", idx+1, err.Error())
-			r.dead = true
-			lastErr = err
-			eventCh <- hedgeEvent{routeIdx: idx, result: hedgePeekResult{}}
-			return
-		}
-		r.resp = resp
-		if resp.StatusCode != http.StatusOK {
-			logger.LogDebug(c, "[hedging] route %d fast-fail status=%d", idx+1, resp.StatusCode)
-			r.dead = true
-			if failedResp == nil {
-				// 非 200：body 未被 peek，完整保留供全败时返回
-				failedResp = hedgeWrapResp(resp, nil, bufio.NewReader(resp.Body))
-			} else {
-				_ = resp.Body.Close()
-			}
-			eventCh <- hedgeEvent{routeIdx: idx, result: hedgePeekResult{}}
-			return
-		}
-		r.reader = bufio.NewReader(resp.Body)
 		go func() {
+			defer func() {
+				if rec := recover(); rec != nil {
+					eventCh <- hedgeEvent{routeIdx: idx, result: hedgePeekResult{err: fmt.Errorf("route panic: %v", rec)}}
+				}
+			}()
+			clone := info
+			if freshKey != "" {
+				clone = hedgeCloneInfo(info, freshKey)
+			}
+			resp, err := hedgeSendOnce(a, c, clone, body)
+			if err != nil {
+				logger.LogDebug(c, "[hedging] route %d send failed: %s", idx+1, err.Error())
+				eventCh <- hedgeEvent{routeIdx: idx, result: hedgePeekResult{err: err}}
+				return
+			}
+			r.resp = resp
+			// 终局检查：竞速已结束则本路废弃，自行关闭止损（断 TCP，上游停止生成）
+			select {
+			case <-done:
+				_ = resp.Body.Close()
+				return
+			default:
+			}
+			// 200 流式与非 200 短 body 统一走 peek：读到首个有效首字（found），
+			// 或读完整条流（非 200 的 body 进 buffered 完整保留，供全败时返回）
+			r.reader = bufio.NewReader(resp.Body)
 			ch := make(chan hedgePeekResult, 1)
 			hedgePeek(r.reader, ch)
 			res := <-ch
@@ -327,7 +304,7 @@ func hedgedDoApiRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, body 
 	var winner *hedgeRoute
 	var winnerBuf []byte
 
-	startRoute() // 路1
+	startRoute() // 路1（异步：主循环 timer 与它的 header 等待并行）
 
 	di := 0
 	for {
@@ -349,11 +326,11 @@ func hedgedDoApiRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, body 
 				continue
 			}
 		}
-		// 全部发完全部废 → 退出
+		// 全部发完全部废 → 退出（发送中的路 dead=false，会继续等它的 event）
 		if di >= len(delays) {
 			allDead := true
 			for _, r := range routes {
-				if !r.dead && r.resp != nil {
+				if !r.dead {
 					allDead = false
 					break
 				}
@@ -387,11 +364,15 @@ func hedgedDoApiRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, body 
 				winnerBuf = ev.result.buffered
 				continue
 			}
-			// 该路废（EOF/读错误；发送失败与非200已在 startRoute 标记 dead）
+			// 该路废（发送失败 / 非200 / 200 流 EOF·读错误）
 			if !r.dead {
 				r.dead = true
 				if ev.result.err != nil {
 					lastErr = ev.result.err
+				}
+				// 非 200：peek 已把短 body 完整读进 buffered，拼回流保留供全败时返回
+				if failedResp == nil && r.resp != nil && r.resp.StatusCode != http.StatusOK {
+					failedResp = hedgeWrapResp(r.resp, ev.result.buffered, r.reader)
 				}
 			}
 		case <-timerC:
@@ -399,7 +380,10 @@ func hedgedDoApiRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, body 
 		}
 	}
 
-	// 收尾：关闭所有非胜出路、非 failedResp 路的连接（断 TCP，上游停止生成）
+	// 终局：通知所有在途路的 goroutine 自行止损（拿到 resp 晚于终局的路由其自身 close）
+	close(done)
+	// 关闭所有已拿到 resp 的非胜出路、非 failedResp 路（断 TCP，上游停止生成；
+	// http body Close 幂等，与 goroutine 侧 done 分支的 close 重复无 panic 风险）
 	for _, r := range routes {
 		if r == winner || r.resp == nil {
 			continue
