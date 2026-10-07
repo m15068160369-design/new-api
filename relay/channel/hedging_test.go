@@ -4,15 +4,90 @@ import (
 	"bufio"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/service"
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// hedgeMockAdaptor 嵌入 Adaptor 接口（未实现方法为 nil），仅实现 hedging 用到的两个。
+type hedgeMockAdaptor struct {
+	Adaptor
+	urlFn func() string
+}
+
+func (m *hedgeMockAdaptor) GetRequestURL(info *common.RelayInfo) (string, error) {
+	return m.urlFn(), nil
+}
+
+func (m *hedgeMockAdaptor) SetupRequestHeader(c *gin.Context, headers *http.Header, info *common.RelayInfo) error {
+	headers.Set("Authorization", "Bearer "+info.ApiKey)
+	return nil
+}
+
+// TestHedgedAsyncParallel 钉死异步并发行为（lou patch #9 v3 修复的 bug 场景）：
+// 路1 命中 hold header 的慢上游（3s 不回响应头），delays[0]=800ms 到点必须立即补发
+// 路2（快上游秒回首字）——两路并行竞速，总耗时 ~1s 而非串行等待 3s+。
+// 修复前的同步版：startRoute 阻塞在等响应头，timer 永不触发，串行死等。
+func TestHedgedAsyncParallel(t *testing.T) {
+	service.InitHttpClient() // 测试环境初始化全局出站 client（生产由 main 初始化）
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(3 * time.Second) // hold 响应头 3s（拥塞上游模拟）
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"slow-win\"}}]}\n\n"))
+	}))
+	defer slow.Close()
+	fast := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"fast-win\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer fast.Close()
+
+	var calls int32
+	adaptor := &hedgeMockAdaptor{urlFn: func() string {
+		if atomic.AddInt32(&calls, 1) == 1 {
+			return slow.URL // 路1 → 慢上游
+		}
+		return fast.URL // 补发路 → 快上游
+	}}
+
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader("{}"))
+	info := &common.RelayInfo{
+		IsStream: true,
+		ChannelMeta: &common.ChannelMeta{
+			ApiKey: "test-key",
+			ChannelSetting: dto.ChannelSettings{
+				HedgingEnabled: true, HedgingDelaysMs: []int{800}, HedgingRatio: 100,
+			},
+		},
+	}
+	body := []byte(`{"model":"m","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+
+	t0 := time.Now()
+	resp, err := hedgedDoApiRequest(adaptor, c, info, body)
+	elapsed := time.Since(t0)
+	require.NoError(t, err)
+	require.Less(t, elapsed.Seconds(), 2.5, "异步并发:路1 hold header 3s、delay=800ms 补快路,应在 ~1s 返回;串行死等(修复前)会 >3s")
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	out, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Contains(t, string(out), "fast-win", "快路应胜出")
+	assert.NotContains(t, string(out), "slow-win", "慢路应被止损")
+	assert.NotPanics(t, func() { _ = resp.Body.Close() })
+}
 
 // [patch lou #9] hedging 单测——保护首字判定、配置解析、流重建（peek+wrap 无缝拼接）三处核心不变式。
 

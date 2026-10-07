@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"io"
 	"math/rand"
+	"runtime/debug"
 	"net/http"
 	"strings"
 	"time"
@@ -270,7 +271,7 @@ func hedgedDoApiRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, body 
 		go func() {
 			defer func() {
 				if rec := recover(); rec != nil {
-					eventCh <- hedgeEvent{routeIdx: idx, result: hedgePeekResult{err: fmt.Errorf("route panic: %v", rec)}}
+					eventCh <- hedgeEvent{routeIdx: idx, result: hedgePeekResult{err: fmt.Errorf("route panic: %v | %s", rec, debug.Stack())}}
 				}
 			}()
 			clone := info
