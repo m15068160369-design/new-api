@@ -17,6 +17,10 @@ type ChannelSettings struct {
 	PassThroughBodyEnabled bool   `json:"pass_through_body_enabled,omitempty"`
 	SystemPrompt           string `json:"system_prompt,omitempty"`
 	SystemPromptOverride   bool   `json:"system_prompt_override,omitempty"`
+	// [patch lou #9] 流式请求对冲（Hedged Request），逻辑见 relay/channel/hedging.go
+	HedgingEnabled  bool  `json:"hedging_enabled,omitempty"`  // 渠道级开关，默认关闭
+	HedgingDelaysMs []int `json:"hedging_delays_ms,omitempty"` // 补发计划（毫秒，绝对时刻），[8000]=双路、[8000,18000]=三路
+	HedgingRatio    int   `json:"hedging_ratio,omitempty"`     // 走对冲的概率%（默认90，其余走原路径保渠道错误统计）
 }
 
 type VertexKeyType string

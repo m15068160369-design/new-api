@@ -305,6 +305,15 @@ func applyHeaderOverrideToRequest(req *http.Request, headerOverride map[string]s
 }
 
 func DoApiRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody io.Reader) (*http.Response, error) {
+	// [patch lou #9] 流式对冲：渠道配置开启+流式+概率命中时走双路竞速（relay/channel/hedging.go），
+	// 其余请求（未配置渠道/非流式/采样落选）走原逻辑，行为零改动
+	if shouldHedge(info) {
+		body, err := io.ReadAll(requestBody)
+		if err != nil {
+			return nil, fmt.Errorf("hedging read body failed: %w", err)
+		}
+		return hedgedDoApiRequest(a, c, info, body)
+	}
 	fullRequestURL, err := a.GetRequestURL(info)
 	if err != nil {
 		return nil, fmt.Errorf("get request url failed: %w", err)
