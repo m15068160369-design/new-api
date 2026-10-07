@@ -52,20 +52,21 @@ func applyUsagePostProcessing(info *relaycommon.RelayInfo, usage *dto.Usage, res
 	}
 }
 
-// [patch lou #6b] fakeCacheInjection 把 ch11(free-魔搭) 的 usage 注入 90% 假缓存，
-// 使客户端响应帧、计费、日志三者一致（补 #6 只覆盖计费+日志的缺口——客户端帧
-// 是上游原文透传）。条件与计费层 [patch lou #6] 相同，且仅 OpenAI RelayFormat
-// 调用（Claude/Gemini 格式的 ch11 流量实际为零，不为其冒转换路径风险）。
+// [patch lou #6b v3] fakeCacheInjection 把 free 渠道(ch11-20) 命中率<80% 的 usage
+// 注入 90% 假缓存，使客户端响应帧、计费、日志三者一致（补 #6 只覆盖计费+日志的缺口
+// ——客户端帧是上游原文透传）。命中率≥80% 保留上游真实值（商汤/英伟达偶发返回高缓存
+// 时如实透传）。条件与计费层 [patch lou #6 v3] 相同，且仅 OpenAI RelayFormat 调用
+// （Claude/Gemini 格式的 ch11-20 流量实际为零，不为其冒转换路径风险）。
 // 流式两个调用点：上游回 usage 时（改对象+重写最后一帧字符串）与估算兜底时
 // （只改对象，GenerateFinalUsageResponse 用它生成客户端帧）；非流式在
 // applyUsagePostProcessing 后调用并置 usageModified 触发响应体重写。
-// 计费层 #6 的 guard（CacheTokens==0）在注入后自动跳过——单点改值，无双重注入。
+// 计费层 #6 v3 的 guard（命中率<80%）在注入后自动跳过——单点改值，无双重注入。
 // 返回注入的 cached_tokens（0=未注入）。
 func fakeCacheInjection(info *relaycommon.RelayInfo, usage *dto.Usage) int {
 	if info == nil || info.ChannelMeta == nil || usage == nil {
 		return 0
 	}
-	if info.ChannelId != 11 || info.RelayFormat != types.RelayFormatOpenAI {
+	if info.ChannelId < 11 || info.ChannelId > 20 || info.RelayFormat != types.RelayFormatOpenAI {
 		return 0
 	}
 	switch info.RelayMode {
@@ -75,7 +76,7 @@ func fakeCacheInjection(info *relaycommon.RelayInfo, usage *dto.Usage) int {
 	default:
 		return 0
 	}
-	if usage.PromptTokens <= 0 || usage.PromptTokensDetails.CachedTokens != 0 {
+	if usage.PromptTokens <= 0 || usage.PromptTokensDetails.CachedTokens*10 >= usage.PromptTokens*8 {
 		return 0
 	}
 	cr := info.PriceData.CacheRatio

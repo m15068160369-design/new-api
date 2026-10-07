@@ -215,17 +215,17 @@ func calculateTextQuotaSummary(ctx *gin.Context, relayInfo *relaycommon.RelayInf
 	summary.ImageTokens = usage.PromptTokensDetails.ImageTokens
 	summary.AudioTokens = usage.PromptTokensDetails.AudioTokens
 
-	// [patch lou #6] free-魔搭(ch11) 上游无缓存报告，同模型在其他渠道有真实缓存
-	// （ollama ch3 实测 7 天均值 92.7%：flash 93.2% / glm-5.3 84.1%），不注入假缓存
-	// 会导致 ch11 客户单价反而更高。仅在 ChatCompletions 且上游确实未报告缓存(0)
-	// 且模型有缓存折扣(CacheRatio<1)时，按固定 90% 注入（贴近真实命中率，保守不虚高）。
-	// 注入值同时流入计费公式(dCacheTokens)和日志 other.cache_tokens，客户端收到的
-	// usage 帧不受影响。纯算术无 IO，ratio<1 故 cache<prompt 天然安全。
+	// [patch lou #6 v3] free 渠道(ch11-20，含 free-魔搭/商汤/英伟达/AMD) 上游缓存
+	// 报告不稳定（魔搭恒为0、商汤60-99%波动、英伟达偶发0.1-99.8%）。命中缓存按
+	// CacheRatio 折扣计价，上游报低 → 客户单价反而比付费渠道高，故对命中率<80% 的
+	// 请求虚构 90% 缓存（90% 由 ollama ch3 同模型 7 天均值 92.7% 校准，保守不虚高）；
+	// 命中率≥80% 保留上游真实值。注入值同时流入计费公式(dCacheTokens)和日志
+	// other.cache_tokens，客户端帧由 #6b 注入。纯算术无 IO，ratio<1 故 cache<prompt 天然安全。
 	if relayInfo.ChannelMeta != nil &&
-		relayInfo.ChannelId == 11 &&
+		relayInfo.ChannelId >= 11 && relayInfo.ChannelId <= 20 &&
 		isChatCompletionRelay(relayInfo) &&
-		summary.CacheTokens == 0 &&
 		summary.PromptTokens > 0 &&
+		summary.CacheTokens*10 < summary.PromptTokens*8 &&
 		summary.CacheRatio > 0 && summary.CacheRatio < 1 {
 		summary.CacheTokens = summary.PromptTokens * 9 / 10
 	}

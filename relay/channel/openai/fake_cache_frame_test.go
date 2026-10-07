@@ -1,9 +1,10 @@
 package openai
 
-// [patch lou #6b] fakeCacheInjection + rewriteStreamUsageCachedTokens 的测试。
-// 覆盖：ch11 OpenAI 流式注入、渠道守卫、RelayMode 守卫、RelayFormat 守卫、
-// 上游真缓存不覆盖、CacheRatio 边界、帧重写（含上游缺 prompt_tokens_details
-// 字段时补造）、帧重写 fail-open（非 JSON 原样返回）。
+// [patch lou #6b v3] fakeCacheInjection + rewriteStreamUsageCachedTokens 的测试。
+// 覆盖：ch11-20 OpenAI 流式注入、范围守卫（ch10/ch21 边界外、ch20 边界内）、
+// RelayMode 守卫、RelayFormat 守卫、上游真缓存<80% 覆盖为 90%、真缓存≥80% 保留、
+// CacheRatio 边界、帧重写（含上游缺 prompt_tokens_details 字段时补造）、
+// 帧重写 fail-open（非 JSON 原样返回）。
 
 import (
 	"testing"
@@ -38,11 +39,18 @@ func TestFakeCacheInjectionCh11OpenAI(t *testing.T) {
 	require.Equal(t, 900, usage.PromptTokensDetails.CachedTokens)
 }
 
-func TestFakeCacheInjectionGuardChannel(t *testing.T) {
-	info := make6bInfo(21, relayconstant.RelayModeChatCompletions, types.RelayFormatOpenAI, 0.25)
+func TestFakeCacheInjectionCh20RangeBoundaries(t *testing.T) {
+	// ch20 在范围(11-20)内 → 注入；ch10/ch21 在范围外 → 不注入
+	for _, ch := range []int{10, 21} {
+		info := make6bInfo(ch, relayconstant.RelayModeChatCompletions, types.RelayFormatOpenAI, 0.25)
+		usage := &dto.Usage{PromptTokens: 1000}
+		require.Equal(t, 0, fakeCacheInjection(info, usage), "ch%d 应被范围守卫拦截", ch)
+		require.Equal(t, 0, usage.PromptTokensDetails.CachedTokens)
+	}
+	info := make6bInfo(20, relayconstant.RelayModeChatCompletions, types.RelayFormatOpenAI, 0.25)
 	usage := &dto.Usage{PromptTokens: 1000}
-	require.Equal(t, 0, fakeCacheInjection(info, usage))
-	require.Equal(t, 0, usage.PromptTokensDetails.CachedTokens)
+	require.Equal(t, 900, fakeCacheInjection(info, usage))
+	require.Equal(t, 900, usage.PromptTokensDetails.CachedTokens)
 }
 
 func TestFakeCacheInjectionGuardEmbedding(t *testing.T) {
@@ -57,11 +65,21 @@ func TestFakeCacheInjectionGuardClaudeFormat(t *testing.T) {
 	require.Equal(t, 0, fakeCacheInjection(info, usage))
 }
 
-func TestFakeCacheInjectionRealCacheUntouched(t *testing.T) {
-	info := make6bInfo(11, relayconstant.RelayModeChatCompletions, types.RelayFormatOpenAI, 0.25)
+func TestFakeCacheInjectionLowCacheOverridden(t *testing.T) {
+	// 上游真实缓存命中率 30% (<80%) → 覆盖为 90%（v3 新行为：原 v2 是 !=0 即保留）
+	info := make6bInfo(12, relayconstant.RelayModeChatCompletions, types.RelayFormatOpenAI, 0.25)
 	usage := &dto.Usage{PromptTokens: 1000, PromptTokensDetails: dto.InputTokenDetails{CachedTokens: 300}}
+	fake := fakeCacheInjection(info, usage)
+	require.Equal(t, 900, fake)
+	require.Equal(t, 900, usage.PromptTokensDetails.CachedTokens)
+}
+
+func TestFakeCacheInjectionHighCacheUntouched(t *testing.T) {
+	// 上游真实缓存命中率 ≥80% → 保留真实值不注入
+	info := make6bInfo(12, relayconstant.RelayModeChatCompletions, types.RelayFormatOpenAI, 0.25)
+	usage := &dto.Usage{PromptTokens: 1000, PromptTokensDetails: dto.InputTokenDetails{CachedTokens: 800}}
 	require.Equal(t, 0, fakeCacheInjection(info, usage))
-	require.Equal(t, 300, usage.PromptTokensDetails.CachedTokens)
+	require.Equal(t, 800, usage.PromptTokensDetails.CachedTokens)
 }
 
 func TestFakeCacheInjectionRatioBoundaries(t *testing.T) {
