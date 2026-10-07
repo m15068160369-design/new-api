@@ -22,6 +22,7 @@ package channel
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -204,7 +205,10 @@ func hedgeNextKey(info *common.RelayInfo) string {
 
 // hedgeSendOnce 构造并发送单路请求（复用 DoApiRequest 原构造链）。
 // freshKey 非空时临时替换 info.ApiKey 走一遍 SetupRequestHeader，构造完立即恢复。
-func hedgeSendOnce(a Adaptor, c *gin.Context, info *common.RelayInfo, body []byte, freshKey string) (*http.Response, error) {
+// headerTimeout > 0 时给「等响应头」阶段设上限：超时未回响应头（拥塞 hold header 场景）
+// 则 cancel 该路按快失败处理；响应头回来后 timer 停止、ctx 保持活跃，
+// 流读不受影响（ctx 父为 Background，永不显式 cancel 亦无泄漏；该路终局由 resp.Body.Close 断流）。
+func hedgeSendOnce(a Adaptor, c *gin.Context, info *common.RelayInfo, body []byte, freshKey string, headerTimeout time.Duration) (*http.Response, error) {
 	fullRequestURL, err := a.GetRequestURL(info)
 	if err != nil {
 		return nil, fmt.Errorf("get request url failed: %w", err)
@@ -214,6 +218,14 @@ func hedgeSendOnce(a Adaptor, c *gin.Context, info *common.RelayInfo, body []byt
 		return nil, fmt.Errorf("new request failed: %w", err)
 	}
 	req.ContentLength = int64(len(body))
+	var timer *time.Timer
+	var cancel context.CancelFunc
+	if headerTimeout > 0 {
+		var ctx context.Context
+		ctx, cancel = context.WithCancel(context.Background())
+		timer = time.AfterFunc(headerTimeout, cancel)
+		req = req.WithContext(ctx)
+	}
 	headers := req.Header
 	origKey := info.ApiKey
 	if freshKey != "" {
@@ -224,14 +236,38 @@ func hedgeSendOnce(a Adaptor, c *gin.Context, info *common.RelayInfo, body []byt
 		info.ApiKey = origKey
 	}
 	if err != nil {
+		if timer != nil {
+			timer.Stop()
+		}
+		if cancel != nil {
+			cancel()
+		}
 		return nil, fmt.Errorf("setup request header failed: %w", err)
 	}
 	headerOverride, err := processHeaderOverride(info, c)
 	if err != nil {
+		if timer != nil {
+			timer.Stop()
+		}
+		if cancel != nil {
+			cancel()
+		}
 		return nil, err
 	}
 	applyHeaderOverrideToRequest(req, headerOverride)
-	return doRequest(c, req, info)
+	resp, err := doRequest(c, req, info)
+	if timer != nil {
+		timer.Stop()
+	}
+	if err != nil {
+		if cancel != nil {
+			cancel()
+		}
+		return nil, err
+	}
+	// 响应头已回：解除超时保护，ctx 保持活跃供下游流读
+	_ = cancel // vet: 显式保留引用；Background 父 ctx 不 cancel 无泄漏
+	return resp, nil
 }
 
 // hedgedDoApiRequest 对冲主循环。delays 为绝对时刻（自请求发起）。
@@ -240,6 +276,9 @@ func hedgeSendOnce(a Adaptor, c *gin.Context, info *common.RelayInfo, body []byt
 // （优先带 body 的非 200 响应，其次最后一个错误）。
 func hedgedDoApiRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, body []byte) (*http.Response, error) {
 	delays := hedgeDelays(info)
+	// 响应头等待上限 = 第一档 delay：拥塞 hold header（60s 级）场景快速止损补路，
+	// 不让路1死锁在 client.Do 等满 60s 请求级超时
+	headerTimeout := delays[0]
 	t0 := time.Now()
 	eventCh := make(chan hedgeEvent, len(delays)+1)
 	routes := make([]*hedgeRoute, 0, len(delays)+1)
@@ -255,7 +294,7 @@ func hedgedDoApiRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, body 
 		if idx > 0 {
 			freshKey = hedgeNextKey(info)
 		}
-		resp, err := hedgeSendOnce(a, c, info, body, freshKey)
+		resp, err := hedgeSendOnce(a, c, info, body, freshKey, headerTimeout)
 		if err != nil {
 			logger.LogDebug(c, "[hedging] route %d send failed: %s", idx+1, err.Error())
 			r.dead = true
