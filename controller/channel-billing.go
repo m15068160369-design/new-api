@@ -387,20 +387,44 @@ func updateChannelClineBalance(channel *model.Channel) (float64, error) {
 	if !response.Success {
 		return 0, fmt.Errorf("cline usage-limits response success=false")
 	}
-	var monthlyPercentUsed *float64
+	var monthlyPercentUsed, weeklyPercentUsed, fiveHourPercentUsed *float64
 	for i := range response.Data.Limits {
-		if response.Data.Limits[i].Type == "monthly" {
+		switch response.Data.Limits[i].Type {
+		case "monthly":
 			monthlyPercentUsed = &response.Data.Limits[i].PercentUsed
-			break
+		case "weekly":
+			weeklyPercentUsed = &response.Data.Limits[i].PercentUsed
+		case "five_hour":
+			fiveHourPercentUsed = &response.Data.Limits[i].PercentUsed
 		}
 	}
 	if monthlyPercentUsed == nil {
 		return 0, fmt.Errorf("cline usage-limits response missing monthly limit")
 	}
-	// remaining = (100 - percentUsed)/100 * $50 monthly cap * 7 CNY/USD
-	balance := (100-*monthlyPercentUsed)/100*50*7
+	balance := clineRemainingCNY(monthlyPercentUsed, weeklyPercentUsed, fiveHourPercentUsed)
 	channel.UpdateBalance(balance)
 	return balance, nil
+}
+
+// [patch lou #8b] remaining CNY under dual caps: monthly $50 cap (¥350) and
+// weekly $25 cap (¥175, half of monthly). The balance is the smaller of the
+// two — whichever cap runs out first limits the channel. A missing weekly
+// limit falls back to monthly-only (previous #8 behavior, keeps the whole
+// update working if Cline ever drops the weekly tier).
+// The five-hour tier is not shown as a cap (it rarely runs out), but when it
+// is fully used the balance is reported as 0 — the channel is genuinely
+// unusable until the tier resets, and a nonzero balance would be a lie.
+func clineRemainingCNY(monthly, weekly, fiveHour *float64) float64 {
+	if fiveHour != nil && *fiveHour >= 100 {
+		return 0
+	}
+	balance := (100-*monthly)/100*50*7
+	if weekly != nil {
+		if v := (100-*weekly)/100*25*7; v < balance {
+			balance = v
+		}
+	}
+	return balance
 }
 
 func updateChannelBalance(channel *model.Channel) (float64, error) {
