@@ -25,6 +25,15 @@ func sendStreamData(c *gin.Context, info *relaycommon.RelayInfo, data string, fo
 		return nil
 	}
 
+	// [patch lou #11] 有模型映射时重写帧（顶层 model + 清除上游路由/成本泄露字段）：
+	// 覆盖所有调用路径——HandleStreamFormat 主循环经此，OaiStreamHandler 最后帧
+	// 直发也经此（绕过 HandleStreamFormat）。解析失败原样透传（fail-open）。
+	if helper.ResponseModelRewriteNeeded(info) {
+		if rewritten, ok := rewriteStreamModelField(data, info.OriginModelName); ok {
+			data = rewritten
+		}
+	}
+
 	if !forceFormat && !thinkToContent {
 		return helper.StringData(c, data)
 	}
@@ -271,12 +280,14 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 		usageModified = true
 	}
 
-	// [patch lou #11] 有模型映射时，非流式响应体的 model 字段改回客户请求名：
+	// [patch lou #11] 有模型映射时，非流式响应体的 model 字段改回客户请求名，
+	// 并清除上游泄露字段（provider_metadata 路由信息、usage 成本字段）：
 	// 统一设 simpleResponse.Model（覆盖下方 Claude/Gemini 转换 case 与
 	// forceFormat 分支）；OpenAI 透传路径由 bodyMap 管道重写。
 	modelRewrite := helper.ResponseModelRewriteNeeded(info)
 	if modelRewrite {
 		simpleResponse.Model = info.OriginModelName
+		simpleResponse.Usage.Cost = nil // dto.Usage.Cost 被上游填充，清零防成本泄露
 	}
 
 	switch info.RelayFormat {
@@ -289,9 +300,7 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 			}
 			bodyMap["usage"] = simpleResponse.Usage
 			if modelRewrite {
-				if _, ok := bodyMap["model"]; ok {
-					bodyMap["model"] = info.OriginModelName
-				}
+				cleanUpstreamLeakage(bodyMap, info.OriginModelName)
 			}
 			responseBody, _ = common.Marshal(bodyMap)
 		}

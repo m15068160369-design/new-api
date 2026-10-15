@@ -128,3 +128,60 @@ func TestRewriteResponsesModelField_NoModel(t *testing.T) {
 		t.Fatalf("expected passthrough, got %s", out)
 	}
 }
+
+func TestCleanUpstreamLeakage_ProviderMetadataAndCost(t *testing.T) {
+	// 实测样本（魔搭 ch11 最后帧）：provider_metadata 含上游路由信息，
+	// usage 含 cost/market_cost/is_byok 成本字段
+	frame := `{"id":"gen_x","object":"chat.completion.chunk","created":1792083797,"model":"vmc/glm-5p3-contributor-fallbacks","system_fingerprint":"fp_x","usage":{"prompt_tokens":16,"completion_tokens":30,"total_tokens":46,"cost":0.000143,"market_cost":0.000143,"is_byok":false,"cost_details":null},"choices":[{"index":0,"delta":{"role":null,"provider_metadata":{"gateway":{"routing":{"canonicalSlug":"private/glm-5p3-contributor","finalProvider":"openai-compatible-private"}}}},"finish_reason":"length"}]}`
+	out, ok := rewriteStreamModelField(frame, "glm-5.3")
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	var m map[string]interface{}
+	if err := json.Unmarshal([]byte(out), &m); err != nil {
+		t.Fatalf("rewritten frame is not valid JSON: %v", err)
+	}
+	if m["model"] != "glm-5.3" {
+		t.Fatalf("model not rewritten: %v", m["model"])
+	}
+	choice := m["choices"].([]interface{})[0].(map[string]interface{})
+	delta := choice["delta"].(map[string]interface{})
+	if _, ok := delta["provider_metadata"]; ok {
+		t.Fatal("delta.provider_metadata not removed")
+	}
+	usage := m["usage"].(map[string]interface{})
+	for _, k := range []string{"cost", "market_cost", "is_byok", "cost_details"} {
+		if _, ok := usage[k]; ok {
+			t.Fatalf("usage.%s not removed", k)
+		}
+	}
+	if usage["prompt_tokens"].(float64) != 16 {
+		t.Fatalf("usage token fields lost: %v", usage)
+	}
+	// 帧尾判断字段保留
+	if choice["finish_reason"] != "length" {
+		t.Fatalf("finish_reason lost: %v", choice)
+	}
+}
+
+func TestCleanUpstreamLeakage_MessageProviderMetadata(t *testing.T) {
+	// 非流式形态：choices[].message.provider_metadata（实测魔搭非流式帧 delta+message 并存）
+	frame := `{"model":"zai-org/GLM-5.2","choices":[{"index":0,"message":{"role":"assistant","content":"hi","provider_metadata":{"x":1}},"finish_reason":null}],"usage":{"total_tokens":5,"cost":0.001}}`
+	var m map[string]interface{}
+	if err := json.Unmarshal([]byte(frame), &m); err != nil {
+		t.Fatal(err)
+	}
+	if !cleanUpstreamLeakage(m, "glm-5.3") {
+		t.Fatal("expected changed=true")
+	}
+	msg := m["choices"].([]interface{})[0].(map[string]interface{})["message"].(map[string]interface{})
+	if _, ok := msg["provider_metadata"]; ok {
+		t.Fatal("message.provider_metadata not removed")
+	}
+	if msg["content"] != "hi" {
+		t.Fatalf("message content lost: %v", msg)
+	}
+	if _, ok := m["usage"].(map[string]interface{})["cost"]; ok {
+		t.Fatal("usage.cost not removed")
+	}
+}

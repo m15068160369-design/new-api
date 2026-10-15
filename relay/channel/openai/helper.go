@@ -23,11 +23,11 @@ import (
 func HandleStreamFormat(c *gin.Context, info *relaycommon.RelayInfo, data string, forceFormat bool, thinkToContent bool) error {
 	info.SendResponseCount++
 
-	// [patch lou #11] 有模型映射时，重写流式帧顶层 model 字段为客户请求名：
-	// OpenAI 格式 fast path 直接透传重写后帧；Claude/Gemini 格式后续 unmarshal
-	// 重写后的 data，转换层继承请求名——一处接入覆盖三种下游格式。
-	// 解析失败原样透传（fail-open）。
-	if helper.ResponseModelRewriteNeeded(info) {
+	// [patch lou #11] 有模型映射时，重写流式帧顶层 model 字段为客户请求名。
+	// OpenAI 格式由 sendStreamData 开头统一重写（含最后帧直发路径），这里只处理
+	// Claude/Gemini 格式——重写后的 data 被 handleClaude/handleGeminiFormat
+	// unmarshal，转换层继承请求名。解析失败原样透传（fail-open）。
+	if info.RelayFormat != types.RelayFormatOpenAI && helper.ResponseModelRewriteNeeded(info) {
 		if rewritten, ok := rewriteStreamModelField(data, info.OriginModelName); ok {
 			data = rewritten
 		}
@@ -261,23 +261,63 @@ func sendResponsesStreamData(c *gin.Context, info *relaycommon.RelayInfo, stream
 }
 
 // [patch lou #11] rewriteStreamModelField 把 chat completions 流式帧顶层
-// "model" 字段重写为 requestModel。map 反序列化只改顶层键（内容字符串里的
-// 同名文本不受影响），保留未知字段零丢失；解析失败或无 model 字段时原样
-// 返回 ok=false（透传，fail-open）。
+// "model" 字段重写为 requestModel，并清除上游泄露字段（见 cleanUpstreamLeakage）。
+// map 反序列化只动顶层键与已知泄露字段（内容字符串里的同名文本不受影响），
+// 保留未知字段零丢失；解析失败或无改动时原样返回 ok=false（透传，fail-open）。
 func rewriteStreamModelField(data string, requestModel string) (string, bool) {
 	var m map[string]interface{}
 	if err := common.Unmarshal(common.StringToByteSlice(data), &m); err != nil {
 		return data, false
 	}
-	if _, ok := m["model"]; !ok {
+	if !cleanUpstreamLeakage(m, requestModel) {
 		return data, false
 	}
-	m["model"] = requestModel
 	out, err := common.Marshal(m)
 	if err != nil {
 		return data, false
 	}
 	return string(out), true
+}
+
+// [patch lou #11] cleanUpstreamLeakage 清除响应里泄露上游路由/采购信息的
+// 字段，并把顶层 model 改为客户请求名。返回是否有改动（无改动则跳过重
+// marshal，保持原样透传）。实测（魔搭 ch11）泄露字段：
+//   - 顶层 model：上游真实模型名（vmc/glm-5p3-contributor-fallbacks 等）
+//   - choices[].delta.provider_metadata / choices[].message.provider_metadata：
+//     上游网关整块路由信息（canonicalSlug/finalProvider/planningReasoning 含
+//     真实模型名与内部 provider 细节）
+//   - usage.cost / market_cost / is_byok / cost_details：上游采购成本直接亮给客户
+func cleanUpstreamLeakage(m map[string]interface{}, requestModel string) bool {
+	changed := false
+	if _, ok := m["model"]; ok {
+		m["model"] = requestModel
+		changed = true
+	}
+	if choices, ok := m["choices"].([]interface{}); ok {
+		for _, c := range choices {
+			choice, ok := c.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			for _, key := range []string{"delta", "message"} {
+				if sub, ok := choice[key].(map[string]interface{}); ok {
+					if _, ok := sub["provider_metadata"]; ok {
+						delete(sub, "provider_metadata")
+						changed = true
+					}
+				}
+			}
+		}
+	}
+	if usage, ok := m["usage"].(map[string]interface{}); ok {
+		for _, k := range []string{"cost", "market_cost", "is_byok", "cost_details"} {
+			if _, ok := usage[k]; ok {
+				delete(usage, k)
+				changed = true
+			}
+		}
+	}
+	return changed
 }
 
 // [patch lou #11] rewriteResponsesModelField 把 /v1/responses 格式帧/体的
