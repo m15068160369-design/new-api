@@ -23,6 +23,16 @@ import (
 func HandleStreamFormat(c *gin.Context, info *relaycommon.RelayInfo, data string, forceFormat bool, thinkToContent bool) error {
 	info.SendResponseCount++
 
+	// [patch lou #11] 有模型映射时，重写流式帧顶层 model 字段为客户请求名：
+	// OpenAI 格式 fast path 直接透传重写后帧；Claude/Gemini 格式后续 unmarshal
+	// 重写后的 data，转换层继承请求名——一处接入覆盖三种下游格式。
+	// 解析失败原样透传（fail-open）。
+	if helper.ResponseModelRewriteNeeded(info) {
+		if rewritten, ok := rewriteStreamModelField(data, info.OriginModelName); ok {
+			data = rewritten
+		}
+	}
+
 	switch info.RelayFormat {
 	case types.RelayFormatOpenAI:
 		return sendStreamData(c, info, data, forceFormat, thinkToContent)
@@ -236,9 +246,66 @@ func HandleFinalResponse(c *gin.Context, info *relaycommon.RelayInfo, lastStream
 	}
 }
 
-func sendResponsesStreamData(c *gin.Context, streamResponse dto.ResponsesStreamResponse, data string) {
+func sendResponsesStreamData(c *gin.Context, info *relaycommon.RelayInfo, streamResponse dto.ResponsesStreamResponse, data string) {
 	if data == "" {
 		return
 	}
+	// [patch lou #11] 有模型映射时重写 responses 帧里的 model 字段
+	// （顶层 model + 嵌套 response.model，覆盖 response.completed 等帧）
+	if helper.ResponseModelRewriteNeeded(info) {
+		if rewritten, ok := rewriteResponsesModelField(common.StringToByteSlice(data), info.OriginModelName); ok {
+			data = string(rewritten)
+		}
+	}
 	_ = helper.ResponseChunkData(c, streamResponse, data)
+}
+
+// [patch lou #11] rewriteStreamModelField 把 chat completions 流式帧顶层
+// "model" 字段重写为 requestModel。map 反序列化只改顶层键（内容字符串里的
+// 同名文本不受影响），保留未知字段零丢失；解析失败或无 model 字段时原样
+// 返回 ok=false（透传，fail-open）。
+func rewriteStreamModelField(data string, requestModel string) (string, bool) {
+	var m map[string]interface{}
+	if err := common.Unmarshal(common.StringToByteSlice(data), &m); err != nil {
+		return data, false
+	}
+	if _, ok := m["model"]; !ok {
+		return data, false
+	}
+	m["model"] = requestModel
+	out, err := common.Marshal(m)
+	if err != nil {
+		return data, false
+	}
+	return string(out), true
+}
+
+// [patch lou #11] rewriteResponsesModelField 把 /v1/responses 格式帧/体的
+// model 字段重写为 requestModel：顶层 model（非流式响应、流式帧）与嵌套
+// response.model（response.completed 等帧）。解析失败或无 model 字段时
+// 原样返回 ok=false（透传，fail-open）。
+func rewriteResponsesModelField(data []byte, requestModel string) ([]byte, bool) {
+	var m map[string]interface{}
+	if err := common.Unmarshal(data, &m); err != nil {
+		return data, false
+	}
+	changed := false
+	if _, ok := m["model"]; ok {
+		m["model"] = requestModel
+		changed = true
+	}
+	if respObj, ok := m["response"].(map[string]interface{}); ok {
+		if _, ok := respObj["model"]; ok {
+			respObj["model"] = requestModel
+			changed = true
+		}
+	}
+	if !changed {
+		return data, false
+	}
+	out, err := common.Marshal(m)
+	if err != nil {
+		return data, false
+	}
+	return out, true
 }

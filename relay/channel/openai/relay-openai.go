@@ -193,7 +193,9 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 
 	applyUsagePostProcessing(info, usage, common.StringToByteSlice(lastStreamData))
 
-	HandleFinalResponse(c, info, lastStreamData, responseId, createAt, model, systemFingerprint, usage, containStreamUsage)
+	// [patch lou #11] 网关本地补的 usage 帧 model 字段也用客户请求名，
+	// 不带出上游真实模型名
+	HandleFinalResponse(c, info, lastStreamData, responseId, createAt, helper.DisplayModelName(info), systemFingerprint, usage, containStreamUsage)
 
 	return usage, nil
 }
@@ -269,15 +271,28 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 		usageModified = true
 	}
 
+	// [patch lou #11] 有模型映射时，非流式响应体的 model 字段改回客户请求名：
+	// 统一设 simpleResponse.Model（覆盖下方 Claude/Gemini 转换 case 与
+	// forceFormat 分支）；OpenAI 透传路径由 bodyMap 管道重写。
+	modelRewrite := helper.ResponseModelRewriteNeeded(info)
+	if modelRewrite {
+		simpleResponse.Model = info.OriginModelName
+	}
+
 	switch info.RelayFormat {
 	case types.RelayFormatOpenAI:
-		if usageModified {
+		if usageModified || modelRewrite {
 			var bodyMap map[string]interface{}
 			err = common.Unmarshal(responseBody, &bodyMap)
 			if err != nil {
 				return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 			}
 			bodyMap["usage"] = simpleResponse.Usage
+			if modelRewrite {
+				if _, ok := bodyMap["model"]; ok {
+					bodyMap["model"] = info.OriginModelName
+				}
+			}
 			responseBody, _ = common.Marshal(bodyMap)
 		}
 		if forceFormat {

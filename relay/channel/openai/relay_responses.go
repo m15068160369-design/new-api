@@ -41,6 +41,13 @@ func OaiResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 	}
 
 	// 写入新的 response body
+	// [patch lou #11] 有模型映射时，responses 非流式响应体的 model 字段
+	// 改回客户请求名（顶层 model + 嵌套 response.model）
+	if helper.ResponseModelRewriteNeeded(info) {
+		if rewritten, ok := rewriteResponsesModelField(responseBody, info.OriginModelName); ok {
+			responseBody = rewritten
+		}
+	}
 	service.IOCopyBytesGracefully(c, resp, responseBody)
 
 	// compute usage
@@ -89,7 +96,7 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 			sr.Error(err)
 			return
 		}
-		sendResponsesStreamData(c, streamResponse, data)
+		sendResponsesStreamData(c, info, streamResponse, data)
 		switch streamResponse.Type {
 		case "response.completed":
 			if streamResponse.Response != nil {
