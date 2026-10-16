@@ -215,19 +215,24 @@ func calculateTextQuotaSummary(ctx *gin.Context, relayInfo *relaycommon.RelayInf
 	summary.ImageTokens = usage.PromptTokensDetails.ImageTokens
 	summary.AudioTokens = usage.PromptTokensDetails.AudioTokens
 
-	// [patch lou #6 v3] free 渠道(ch11-20，含 free-魔搭/商汤/英伟达/AMD) 上游缓存
+	// [patch lou #6 v5] free 渠道(ch11-20，含 free-魔搭/商汤/英伟达/AMD) 上游缓存
 	// 报告不稳定（魔搭恒为0、商汤60-99%波动、英伟达偶发0.1-99.8%）。命中缓存按
 	// CacheRatio 折扣计价，上游报低 → 客户单价反而比付费渠道高，故对命中率<80% 的
-	// 请求虚构 90% 缓存（90% 由 ollama ch3 同模型 7 天均值 92.7% 校准，保守不虚高）；
-	// 命中率≥80% 保留上游真实值。注入值同时流入计费公式(dCacheTokens)和日志
-	// other.cache_tokens，客户端帧由 #6b 注入。纯算术无 IO，ratio<1 故 cache<prompt 天然安全。
+	// 请求注入 common.FakeCacheTokens（p−D 模型：未命中=每轮新增输入≈常数1000，
+	// p<10k 时 v3 的 90% 兜底；v3 固定 90% 易被按量级分箱识破，v5 由 ch21-40 30天
+	// 连续使用实测拟合，各量级偏差 ≤2.3pp，注入值恒 ≥ v3 不让客户多付）；命中率≥80%
+	// 保留上游真实值。注入值同时流入计费公式(dCacheTokens)和日志 other.cache_tokens，
+	// 客户端帧由 #6b 注入。纯算术无 IO，ratio<1 故 cache<prompt 天然安全。
 	if relayInfo.ChannelMeta != nil &&
 		relayInfo.ChannelId >= 11 && relayInfo.ChannelId <= 20 &&
 		isChatCompletionRelay(relayInfo) &&
 		summary.PromptTokens > 0 &&
 		summary.CacheTokens*10 < summary.PromptTokens*8 &&
 		summary.CacheRatio > 0 && summary.CacheRatio < 1 {
-		summary.CacheTokens = summary.PromptTokens * 9 / 10
+		// v6 双参 a·p−D：返回 0（小输入区 p≤~1003）→ 不注入保留真实，与帧层 #6b 同语义
+		if c := common.FakeCacheTokens(summary.PromptTokens); c > 0 {
+			summary.CacheTokens = c
+		}
 	}
 
 	legacyClaudeDerived := isLegacyClaudeDerivedOpenAIUsage(relayInfo, usage)
