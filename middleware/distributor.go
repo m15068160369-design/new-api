@@ -29,10 +29,11 @@ type ModelRequest struct {
 	Group string `json:"group,omitempty"`
 }
 
-// estimateRequestInputTokens returns a coarse estimate of the prompt token count
-// for channel-threshold routing. Only chat-style messages are counted; any other
-// shape returns -1 (fail-open). Also returns -1 when no threshold is configured.
-func estimateRequestInputTokens(c *gin.Context, modelName string) int {
+// estimateRequestInputTokens returns the request body BYTE COUNT for channel
+// threshold routing. O(1) via BodyStorage.Size() — no body scan, no tokenizer.
+// Returns -1 (fail-open) when no threshold is configured or size is unknown.
+// Threshold env value is therefore in BYTES, not tokens.
+func estimateRequestInputTokens(c *gin.Context) int {
 	if !model.ChannelTokenThresholdEnabled() {
 		return -1
 	}
@@ -40,27 +41,11 @@ func estimateRequestInputTokens(c *gin.Context, modelName string) int {
 	if err != nil {
 		return -1
 	}
-	b, err := storage.Bytes()
-	if err != nil || len(b) == 0 {
+	size := storage.Size()
+	if size <= 0 {
 		return -1
 	}
-	var texts []string
-	for _, msg := range gjson.GetBytes(b, "messages").Array() {
-		switch content := msg.Get("content"); content.Type {
-		case gjson.String:
-			texts = append(texts, content.String())
-		case gjson.JSON:
-			for _, part := range content.Array() {
-				if t := part.Get("text"); t.Type == gjson.String {
-					texts = append(texts, t.String())
-				}
-			}
-		}
-	}
-	if len(texts) == 0 {
-		return -1
-	}
-	return service.CountTokenInput(strings.Join(texts, "\n"), modelName)
+	return int(size)
 }
 
 func Distribute() func(c *gin.Context) {
@@ -135,8 +120,8 @@ func Distribute() func(c *gin.Context) {
 					}
 				}
 
-				// [patch lou #12] estimate input tokens once for threshold routing.
-				if est := estimateRequestInputTokens(c, modelRequest.Model); est >= 0 {
+				// [patch lou #12] body byte count (once per request) for threshold routing.
+				if est := estimateRequestInputTokens(c); est >= 0 {
 					common.SetContextKey(c, constant.ContextKeyEstimatedInputTokens, est)
 				}
 
