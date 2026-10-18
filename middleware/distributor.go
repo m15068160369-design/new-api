@@ -29,6 +29,40 @@ type ModelRequest struct {
 	Group string `json:"group,omitempty"`
 }
 
+// estimateRequestInputTokens returns a coarse estimate of the prompt token count
+// for channel-threshold routing. Only chat-style messages are counted; any other
+// shape returns -1 (fail-open). Also returns -1 when no threshold is configured.
+func estimateRequestInputTokens(c *gin.Context, modelName string) int {
+	if !model.ChannelTokenThresholdEnabled() {
+		return -1
+	}
+	storage, err := common.GetBodyStorage(c)
+	if err != nil {
+		return -1
+	}
+	b, err := storage.Bytes()
+	if err != nil || len(b) == 0 {
+		return -1
+	}
+	var texts []string
+	for _, msg := range gjson.GetBytes(b, "messages").Array() {
+		switch content := msg.Get("content"); content.Type {
+		case gjson.String:
+			texts = append(texts, content.String())
+		case gjson.JSON:
+			for _, part := range content.Array() {
+				if t := part.Get("text"); t.Type == gjson.String {
+					texts = append(texts, t.String())
+				}
+			}
+		}
+	}
+	if len(texts) == 0 {
+		return -1
+	}
+	return service.CountTokenInput(strings.Join(texts, "\n"), modelName)
+}
+
 func Distribute() func(c *gin.Context) {
 	return func(c *gin.Context) {
 		var channel *model.Channel
@@ -101,11 +135,17 @@ func Distribute() func(c *gin.Context) {
 					}
 				}
 
+				// [patch lou #12] estimate input tokens once for threshold routing.
+				if est := estimateRequestInputTokens(c, modelRequest.Model); est >= 0 {
+					common.SetContextKey(c, constant.ContextKeyEstimatedInputTokens, est)
+				}
+
 				if preferredChannelID, found := service.GetPreferredChannelByAffinity(c, modelRequest.Model, usingGroup); found {
 					affinityUsable := false
 					preferred, err := model.CacheGetChannel(preferredChannelID)
 					if err == nil && preferred != nil && preferred.Status == common.ChannelStatusEnabled &&
-						channelSupportsRequestPath(preferred, c.Request.URL.Path, modelRequest.Model) {
+						channelSupportsRequestPath(preferred, c.Request.URL.Path, modelRequest.Model) &&
+						model.ChannelPassesTokenThreshold(preferred.Id, service.GetEstimatedInputTokens(c)) {
 						if usingGroup == "auto" {
 							userGroup := common.GetContextKeyString(c, constant.ContextKeyUserGroup)
 							autoGroups := service.GetUserAutoGroup(userGroup)

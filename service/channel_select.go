@@ -20,6 +20,20 @@ type RetryParam struct {
 	resetNextTry bool
 }
 
+// GetEstimatedInputTokens reads the per-request input-token estimate cached by
+// the distributor for threshold routing. Returns -1 when unset or unknown.
+func GetEstimatedInputTokens(ctx *gin.Context) int {
+	if ctx == nil {
+		return -1
+	}
+	if v, ok := common.GetContextKey(ctx, constant.ContextKeyEstimatedInputTokens); ok {
+		if est, ok2 := v.(int); ok2 {
+			return est
+		}
+	}
+	return -1
+}
+
 func (p *RetryParam) GetRetry() int {
 	if p.Retry == nil {
 		return 0
@@ -116,7 +130,7 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 			}
 			logger.LogDebug(param.Ctx, "Auto selecting group: %s, priorityRetry: %d", autoGroup, priorityRetry)
 
-			channel, _ = model.GetRandomSatisfiedChannel(autoGroup, param.ModelName, priorityRetry, param.RequestPath)
+			channel, _ = model.GetRandomSatisfiedChannel(autoGroup, param.ModelName, priorityRetry, param.RequestPath, GetEstimatedInputTokens(param.Ctx))
 			if channel == nil {
 				// Current group has no available channel for this model, try next group
 				// 当前分组没有该模型的可用渠道，尝试下一个分组
@@ -154,7 +168,7 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 			break
 		}
 	} else {
-		channel, err = model.GetRandomSatisfiedChannel(param.TokenGroup, param.ModelName, param.GetRetry(), param.RequestPath)
+		channel, err = model.GetRandomSatisfiedChannel(param.TokenGroup, param.ModelName, param.GetRetry(), param.RequestPath, GetEstimatedInputTokens(param.Ctx))
 		if err != nil {
 			return nil, param.TokenGroup, err
 		}

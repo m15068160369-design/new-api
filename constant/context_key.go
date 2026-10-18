@@ -53,6 +53,7 @@ const (
 	ContextKeyUserName    ContextKey = "username"
 
 	ContextKeyLocalCountTokens ContextKey = "local_count_tokens"
+	ContextKeyEstimatedInputTokens ContextKey = "estimated_input_tokens"
 
 	ContextKeySystemPromptOverride ContextKey = "system_prompt_override"
 

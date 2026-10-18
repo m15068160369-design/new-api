@@ -1,10 +1,13 @@
 package model
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math/rand"
+	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -22,6 +25,89 @@ var channelsIDM map[int]*Channel                     // all channels include dis
 // path-aware selection avoids re-parsing JSON per request. Refreshed on full sync.
 var channel2advancedCustomConfig map[int]*dto.AdvancedCustomConfig
 var channelSyncLock sync.RWMutex
+
+// [patch lou #12] per-channel minimum estimated input tokens for eligibility.
+// Config: CHANNEL_MIN_INPUT_TOKENS='{"11":5000}' (JSON map channel_id -> tokens).
+// A channel with a threshold is eligible only when the request's estimated input
+// tokens >= its threshold. Fail-open: unknown size (<0) keeps eligibility, and
+// filtering never strands a request (empty result falls back to all candidates).
+var channelMinInputTokens struct {
+	sync.Once
+	m map[int]int
+}
+
+func getChannelMinInputTokens() map[int]int {
+	channelMinInputTokens.Do(func() {
+		channelMinInputTokens.m = map[int]int{}
+		raw := os.Getenv("CHANNEL_MIN_INPUT_TOKENS")
+		if raw == "" {
+			return
+		}
+		var parsed map[string]int
+		if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+			common.SysError("invalid CHANNEL_MIN_INPUT_TOKENS, token threshold routing disabled: " + err.Error())
+			return
+		}
+		for k, v := range parsed {
+			if id, err := strconv.Atoi(k); err == nil && v > 0 {
+				channelMinInputTokens.m[id] = v
+			}
+		}
+		if len(channelMinInputTokens.m) > 0 {
+			common.SysLog(fmt.Sprintf("channel input-token threshold routing enabled for %d channel(s)", len(channelMinInputTokens.m)))
+		}
+	})
+	return channelMinInputTokens.m
+}
+
+// ChannelTokenThresholdEnabled reports whether any channel has an input-token
+// threshold configured. Distributors use it to skip estimation when unused.
+func ChannelTokenThresholdEnabled() bool {
+	return len(getChannelMinInputTokens()) > 0
+}
+
+// ChannelPassesTokenThreshold reports whether a channel is eligible given the
+// request's estimated input tokens. estTokens < 0 means unknown (non-chat
+// endpoint or estimation skipped) - fail-open: threshold channels stay eligible.
+func ChannelPassesTokenThreshold(channelId int, estTokens int) bool {
+	minTokens, has := getChannelMinInputTokens()[channelId]
+	if !has || minTokens <= 0 || estTokens < 0 {
+		return true
+	}
+	return estTokens >= minTokens
+}
+
+func filterChannelsByTokenThreshold(channelIds []int, estTokens int) []int {
+	if len(channelIds) == 0 || !ChannelTokenThresholdEnabled() {
+		return channelIds
+	}
+	filtered := make([]int, 0, len(channelIds))
+	for _, id := range channelIds {
+		if ChannelPassesTokenThreshold(id, estTokens) {
+			filtered = append(filtered, id)
+		}
+	}
+	if len(filtered) == 0 {
+		return channelIds // fail-open: never strand a request by filtering out every candidate
+	}
+	return filtered
+}
+
+func filterAbilitiesByTokenThreshold(abilities []Ability, estTokens int) []Ability {
+	if len(abilities) == 0 || !ChannelTokenThresholdEnabled() {
+		return abilities
+	}
+	filtered := make([]Ability, 0, len(abilities))
+	for _, a := range abilities {
+		if ChannelPassesTokenThreshold(a.ChannelId, estTokens) {
+			filtered = append(filtered, a)
+		}
+	}
+	if len(filtered) == 0 {
+		return abilities
+	}
+	return filtered
+}
 
 func InitChannelCache() {
 	if !common.MemoryCacheEnabled {
@@ -111,10 +197,10 @@ func SyncChannelCache(frequency int) {
 	}
 }
 
-func GetRandomSatisfiedChannel(group string, model string, retry int, requestPath string) (*Channel, error) {
+func GetRandomSatisfiedChannel(group string, model string, retry int, requestPath string, estTokens int) (*Channel, error) {
 	// if memory cache is disabled, get channel directly from database
 	if !common.MemoryCacheEnabled {
-		return GetChannel(group, model, retry, requestPath)
+		return GetChannel(group, model, retry, requestPath, estTokens)
 	}
 
 	channelSyncLock.RLock()
@@ -128,6 +214,9 @@ func GetRandomSatisfiedChannel(group string, model string, retry int, requestPat
 		normalizedModel := ratio_setting.FormatMatchingModelName(model)
 		channels = filterChannelsByRequestPathAndModel(group2model2channels[group][normalizedModel], requestPath, model)
 	}
+
+	// [patch lou #12] drop token-thresholded channels that the request size does not meet.
+	channels = filterChannelsByTokenThreshold(channels, estTokens)
 
 	if len(channels) == 0 {
 		return nil, nil
