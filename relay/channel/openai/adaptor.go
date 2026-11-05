@@ -365,6 +365,15 @@ func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayIn
 		}
 	}
 
+	// [patch lou #13] reasoning_effort 网关层纠正：国内上游（GLM/魔搭/商汤等）只认 low/high/max，
+	// 客户端（如 Hermes custom profile 默认 medium、标题调用 none）发出的不合规值上游直接
+	// 400 "field ReasoningEffort invalid, should be one of: low, high, max"。中转站统一兜底：
+	// 合规值（low/high/max）原样透传；不合规值统一归 max（只升不降，不砍用户思考强度）。
+	// 仅作用于非 o/gpt-5 模型（OpenAI 官方推理模型走上面分支，接受 minimal/medium/high）。
+	if request.ReasoningEffort != "" && !isOpenAICompatValidEffort(request.ReasoningEffort) {
+		request.ReasoningEffort = "max"
+	}
+
 	return request, nil
 }
 
