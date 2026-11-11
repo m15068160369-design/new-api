@@ -68,3 +68,7 @@ export const DEFAULT_DISCOUNT_RATE = 1.0
  * Default minimum topup amount
  */
 export const DEFAULT_MIN_TOPUP = 1
+
+/** Default custom-amount prefill in the wallet top-up page. The effective
+ *  prefill is max(this, the active minimum top-up), so minimums still hold. */
+export const DEFAULT_TOPUP_AMOUNT = 100

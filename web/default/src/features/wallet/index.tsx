@@ -32,7 +32,7 @@ import { TransferDialog } from './components/dialogs/transfer-dialog'
 import { RechargeFormCard } from './components/recharge-form-card'
 import { SubscriptionPlansCard } from './components/subscription-plans-card'
 import { WalletStatsCard } from './components/wallet-stats-card'
-import { DEFAULT_DISCOUNT_RATE } from './constants'
+import { DEFAULT_DISCOUNT_RATE, DEFAULT_TOPUP_AMOUNT } from './constants'
 import {
   useTopupInfo,
   usePayment,
@@ -136,11 +136,14 @@ export function Wallet(props: WalletProps) {
   useEffect(() => {
     if (topupInfo && topupAmount === 0) {
       const minTopup = getMinTopupAmount(topupInfo)
-      setTopupAmount(minTopup)
+      // Prefill the custom-amount box with 100 by default (lou), but never
+      // below the active minimum top-up.
+      const initialAmount = Math.max(DEFAULT_TOPUP_AMOUNT, minTopup)
+      setTopupAmount(initialAmount)
 
       // Calculate initial payment amount with default payment type
       const defaultPaymentType = getDefaultPaymentType(topupInfo)
-      calculatePaymentAmount(minTopup, defaultPaymentType)
+      calculatePaymentAmount(initialAmount, defaultPaymentType)
     }
   }, [topupInfo, topupAmount, calculatePaymentAmount])
 
