@@ -189,7 +189,7 @@ export function Wallet(props: WalletProps) {
 
     const isPancake = isWaffoPancakePayment(selectedPaymentMethod.type)
     const success = isPancake
-      ? await processWaffoPancakePayment(topupAmount)
+      ? await processWaffoPancakePayment(topupAmount, selectedPaymentMethod.type)
       : await processPayment(topupAmount, selectedPaymentMethod.type)
 
     if (success) {

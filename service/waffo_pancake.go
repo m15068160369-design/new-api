@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/QuantumNous/new-api/model"
@@ -20,7 +21,10 @@ type WaffoPancakePriceSnapshot struct {
 // BuyerIdentity must be stable per user (see WaffoPancakeBuyerIdentityFromUserID).
 // OrderMerchantExternalID = our trade_no; Pancake echoes it back in webhooks.
 type WaffoPancakeCreateSessionParams struct {
-	ProductID               string
+	ProductID string
+	// Currency is the checkout pricing currency (ISO 4217), e.g. "CNY" for
+	// the CN channel. Empty defaults to "USD".
+	Currency                string
 	BuyerIdentity           string
 	PriceSnapshot           *WaffoPancakePriceSnapshot
 	BuyerEmail              string
@@ -93,28 +97,52 @@ func newWaffoPancakeClientFromCreds(merchantID, privateKey string) (*pancake.Cli
 	})
 }
 
-// CreateWaffoPancakeCheckoutSession creates an Authenticated-mode checkout
-// session: the order is bound to BuyerIdentity (stable per user) so it stays
-// attributable even if the buyer edits the email on Waffo's checkout form.
-func CreateWaffoPancakeCheckoutSession(ctx context.Context, params *WaffoPancakeCreateSessionParams) (*WaffoPancakeCheckoutSession, error) {
+// validateWaffoPancakeCreateSessionParams checks the non-credential parts of
+// a checkout-session request.
+func validateWaffoPancakeCreateSessionParams(params *WaffoPancakeCreateSessionParams) error {
 	if params == nil {
-		return nil, fmt.Errorf("missing checkout params")
+		return fmt.Errorf("missing checkout params")
 	}
 	if strings.TrimSpace(params.BuyerIdentity) == "" {
-		return nil, fmt.Errorf("missing buyer identity")
+		return fmt.Errorf("missing buyer identity")
 	}
 	if strings.TrimSpace(params.OrderMerchantExternalID) == "" {
-		return nil, fmt.Errorf("missing order merchant external id")
+		return fmt.Errorf("missing order merchant external id")
 	}
-	client, err := newWaffoPancakeClient()
+	return nil
+}
+
+// CreateWaffoPancakeCheckoutSession creates an Authenticated-mode checkout
+// session with the legacy gateway's shared credentials (used by the legacy
+// top-up flow and subscriptions). The order is bound to BuyerIdentity
+// (stable per user) so it stays attributable even if the buyer edits the
+// email on Waffo's checkout form. CN/US dual channels use
+// CreateWaffoPancakeCheckoutSessionForCreds with their own credentials.
+func CreateWaffoPancakeCheckoutSession(ctx context.Context, params *WaffoPancakeCreateSessionParams) (*WaffoPancakeCheckoutSession, error) {
+	return CreateWaffoPancakeCheckoutSessionForCreds(ctx, setting.WaffoPancakeMerchantID, setting.WaffoPancakePrivateKey, params)
+}
+
+// CreateWaffoPancakeCheckoutSessionForCreds creates an Authenticated-mode
+// checkout session with explicitly supplied credentials — used by the CN/US
+// dual channels, each of which owns its own merchant account settings.
+// With shared (legacy-gateway) credentials use CreateWaffoPancakeCheckoutSession.
+func CreateWaffoPancakeCheckoutSessionForCreds(ctx context.Context, merchantID, privateKey string, params *WaffoPancakeCreateSessionParams) (*WaffoPancakeCheckoutSession, error) {
+	if err := validateWaffoPancakeCreateSessionParams(params); err != nil {
+		return nil, err
+	}
+	client, err := newWaffoPancakeClientFromCreds(merchantID, privateKey)
 	if err != nil {
 		return nil, fmt.Errorf("build Waffo Pancake client: %w", err)
 	}
 
+	currency := strings.TrimSpace(params.Currency)
+	if currency == "" {
+		currency = "USD"
+	}
 	sdkParams := pancake.AuthenticatedCheckoutParams{
 		CreateCheckoutSessionParams: pancake.CreateCheckoutSessionParams{
 			ProductID:               params.ProductID,
-			Currency:                "USD",
+			Currency:                currency,
 			BuyerEmail:              optionalString(params.BuyerEmail),
 			ExpiresInSeconds:        params.ExpiresInSeconds,
 			OrderMerchantExternalID: optionalString(params.OrderMerchantExternalID),
@@ -382,6 +410,34 @@ func CreateWaffoPancakePrimaryPair(ctx context.Context, merchantID, privateKey, 
 		ProductID:   productID,
 		ProductName: defaultWaffoPancakeProductName,
 	}, nil
+}
+
+// SaveWaffoPancakeChannelConfig persists one dual-channel's configuration in
+// a single bulk update. A blank private key keeps the persisted one
+// (Stripe-style API-secret UX); a blank product ID disables the channel.
+func SaveWaffoPancakeChannelConfig(ctx context.Context, channel, merchantID, privateKey, productID string, unitPrice, ratio float64, minTopUp int) error {
+	channel = strings.TrimSpace(strings.ToLower(channel))
+	if channel != "cn" && channel != "us" {
+		return fmt.Errorf("channel must be \"cn\" or \"us\"")
+	}
+	prefix := "WaffoPancakeCN"
+	if channel == "us" {
+		prefix = "WaffoPancakeUS"
+	}
+	values := map[string]string{
+		prefix + "MerchantID": strings.TrimSpace(merchantID),
+		prefix + "ProductID":  strings.TrimSpace(productID),
+		prefix + "UnitPrice":  strconv.FormatFloat(unitPrice, 'f', -1, 64),
+		prefix + "Ratio":      strconv.FormatFloat(ratio, 'f', -1, 64),
+		prefix + "MinTopUp":   strconv.Itoa(minTopUp),
+	}
+	if pk := strings.TrimSpace(privateKey); pk != "" {
+		values[prefix+"PrivateKey"] = pk
+	}
+	if err := model.UpdateOptionsBulk(values); err != nil {
+		return fmt.Errorf("persist Waffo Pancake %s channel config: %w", channel, err)
+	}
+	return nil
 }
 
 // SaveWaffoPancakeConfig persists the operator-controlled fields atomically

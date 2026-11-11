@@ -69,13 +69,16 @@ export function useWaffoPancakePayment() {
   const [processing, setProcessing] = useState(false)
 
   const processWaffoPancakePayment = useCallback(
-    async (topupAmount: number) => {
+    async (topupAmount: number, paymentType?: string) => {
       setProcessing(true)
 
       try {
-        const response = await requestWaffoPancakePayment({
-          amount: Math.floor(topupAmount),
-        })
+        const response = await requestWaffoPancakePayment(
+          {
+            amount: Math.floor(topupAmount),
+          },
+          paymentType
+        )
 
         if (isApiSuccess(response)) {
           const checkoutUrl = getCheckoutUrl(response.data)

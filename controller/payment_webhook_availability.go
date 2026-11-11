@@ -84,6 +84,24 @@ func isWaffoPancakeTopUpEnabled() bool {
 		strings.TrimSpace(setting.WaffoPancakeProductID) != ""
 }
 
+func isWaffoPancakeCNTopUpEnabled() bool {
+	if !isPaymentComplianceConfirmed() {
+		return false
+	}
+	return strings.TrimSpace(setting.WaffoPancakeCNMerchantID) != "" &&
+		strings.TrimSpace(setting.WaffoPancakeCNPrivateKey) != "" &&
+		strings.TrimSpace(setting.WaffoPancakeCNProductID) != ""
+}
+
+func isWaffoPancakeUSTopUpEnabled() bool {
+	if !isPaymentComplianceConfirmed() {
+		return false
+	}
+	return strings.TrimSpace(setting.WaffoPancakeUSMerchantID) != "" &&
+		strings.TrimSpace(setting.WaffoPancakeUSPrivateKey) != "" &&
+		strings.TrimSpace(setting.WaffoPancakeUSProductID) != ""
+}
+
 func isWaffoPancakeWebhookConfigured() bool {
 	return isWaffoPancakeTopUpEnabled()
 }

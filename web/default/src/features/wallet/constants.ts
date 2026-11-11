@@ -36,6 +36,8 @@ export const PAYMENT_TYPES = {
   CREEM: 'creem',
   WAFFO: 'waffo',
   WAFFO_PANCAKE: 'waffo_pancake',
+  WAFFO_PANCAKE_CN: 'waffo_pancake_cn',
+  WAFFO_PANCAKE_US: 'waffo_pancake_us',
 } as const
 
 /**
@@ -50,9 +52,11 @@ export const PAYMENT_ICON_COLORS = {
   [PAYMENT_TYPES.ALIPAY]: '#1677FF',
   [PAYMENT_TYPES.WECHAT]: '#07C160',
   [PAYMENT_TYPES.STRIPE]: '#635BFF',
-  [PAYMENT_TYPES.CREEM]: '#6366F1',
+  [PAYMENT_TYPES.CREEM]: '#6361F1',
   [PAYMENT_TYPES.WAFFO]: '#2563EB',
   [PAYMENT_TYPES.WAFFO_PANCAKE]: '#F97316',
+  [PAYMENT_TYPES.WAFFO_PANCAKE_CN]: '#10B981',
+  [PAYMENT_TYPES.WAFFO_PANCAKE_US]: '#2563EB',
 } as const
 
 /**

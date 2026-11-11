@@ -18,6 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { api } from '@/lib/api'
 
+import { PAYMENT_TYPES } from './constants'
 import type {
   RedemptionRequest,
   PaymentRequest,
@@ -149,21 +150,37 @@ export async function requestWaffoPayment(
  * Calculate payment amount for Waffo Pancake payment
  */
 export async function calculateWaffoPancakeAmount(
-  request: AmountRequest
+  request: AmountRequest,
+  paymentType?: string
 ): Promise<AmountResponse> {
-  const res = await api.post('/api/user/waffo-pancake/amount', request, {
+  const endpoint =
+    paymentType === PAYMENT_TYPES.WAFFO_PANCAKE_CN
+      ? '/api/user/waffo-pancake-cn/amount'
+      : paymentType === PAYMENT_TYPES.WAFFO_PANCAKE_US
+        ? '/api/user/waffo-pancake-us/amount'
+        : '/api/user/waffo-pancake/amount'
+  const res = await api.post(endpoint, request, {
     skipBusinessError: true,
   } as Record<string, unknown>)
   return res.data
 }
 
 /**
- * Request Waffo Pancake payment
+ * Request Waffo Pancake payment. paymentType picks the channel endpoint:
+ * WAFFO_PANCAKE_CN / WAFFO_PANCAKE_US for the dual channels, anything else
+ * (or omitted) falls back to the legacy gateway.
  */
 export async function requestWaffoPancakePayment(
-  request: WaffoPancakePaymentRequest
+  request: WaffoPancakePaymentRequest,
+  paymentType?: string
 ): Promise<WaffoPancakePaymentResponse> {
-  const res = await api.post('/api/user/waffo-pancake/pay', request, {
+  const endpoint =
+    paymentType === PAYMENT_TYPES.WAFFO_PANCAKE_CN
+      ? '/api/user/waffo-pancake-cn/pay'
+      : paymentType === PAYMENT_TYPES.WAFFO_PANCAKE_US
+        ? '/api/user/waffo-pancake-us/pay'
+        : '/api/user/waffo-pancake/pay'
+  const res = await api.post(endpoint, request, {
     skipBusinessError: true,
   } as Record<string, unknown>)
   return res.data

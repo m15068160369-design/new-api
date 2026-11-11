@@ -83,7 +83,11 @@ export function isStripePayment(paymentType: string): boolean {
  * special-cased in payment dispatch logic.
  */
 export function isWaffoPancakePayment(paymentType: string): boolean {
-  return paymentType === PAYMENT_TYPES.WAFFO_PANCAKE
+  return (
+    paymentType === PAYMENT_TYPES.WAFFO_PANCAKE ||
+    paymentType === PAYMENT_TYPES.WAFFO_PANCAKE_CN ||
+    paymentType === PAYMENT_TYPES.WAFFO_PANCAKE_US
+  )
 }
 
 /**

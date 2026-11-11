@@ -134,6 +134,8 @@ export function getPaymentIcon(
         />
       )
     case PAYMENT_TYPES.WAFFO_PANCAKE:
+    case PAYMENT_TYPES.WAFFO_PANCAKE_CN:
+    case PAYMENT_TYPES.WAFFO_PANCAKE_US:
       // The W glyph fills only ~40% of its viewBox vertically (wide and
       // short letterform); scale(2) brings its rendered height in line
       // with Stripe's S and Creem's Landmark.

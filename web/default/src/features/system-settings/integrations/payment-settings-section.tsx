@@ -70,6 +70,9 @@ import {
 } from './utils'
 import { saveWaffoPancakeConfig } from './waffo-pancake-api'
 import {
+  WaffoPancakeChannelSettingsSection,
+} from './waffo-pancake-channel-settings-section'
+import {
   WaffoPancakeSettingsSection,
   type WaffoPancakeBinding,
   type WaffoPancakeSettingsValues,
@@ -883,6 +886,8 @@ export function PaymentSettingsSection({
                 <TabsTrigger value='stripe'>{t('Stripe')}</TabsTrigger>
                 <TabsTrigger value='creem'>Creem</TabsTrigger>
                 <TabsTrigger value='waffo-pancake'>Waffo Pancake</TabsTrigger>
+                <TabsTrigger value='waffo-pancake-cn'>Waffo Pancake CN</TabsTrigger>
+                <TabsTrigger value='waffo-pancake-us'>Waffo Pancake US</TabsTrigger>
                 <TabsTrigger value='waffo'>Waffo</TabsTrigger>
               </TabsList>
             </div>
@@ -1600,6 +1605,20 @@ export function PaymentSettingsSection({
                 savedBinding={waffoPancakeSavedBinding}
                 onSelectedBindingChange={setWaffoPancakeSelection}
               />
+            </TabsContent>
+
+            <TabsContent
+              value='waffo-pancake-cn'
+              className={paymentTabContentClassName}
+            >
+              <WaffoPancakeChannelSettingsSection channel='cn' />
+            </TabsContent>
+
+            <TabsContent
+              value='waffo-pancake-us'
+              className={paymentTabContentClassName}
+            >
+              <WaffoPancakeChannelSettingsSection channel='us' />
             </TabsContent>
 
             <TabsContent value='waffo' className={paymentTabContentClassName}>

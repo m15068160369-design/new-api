@@ -29,7 +29,14 @@ const (
 	PaymentMethodCreem        = "creem"
 	PaymentMethodWaffo        = "waffo"
 	PaymentMethodWaffoPancake = "waffo_pancake"
-	PaymentMethodBalance      = "balance"
+	// Dual Pancake top-up channels (CN priced in CNY via WeChat Pay, US in
+	// USD via cards). Both share PaymentProviderWaffoPancake — the webhook
+	// and RechargeWaffoPancake path resolve by trade_no + provider, so the
+	// channels need no separate webhook handling; only the visible method
+	// type, credentials, product and pricing differ.
+	PaymentMethodWaffoPancakeCN = "waffo_pancake_cn"
+	PaymentMethodWaffoPancakeUS = "waffo_pancake_us"
+	PaymentMethodBalance        = "balance"
 )
 
 const (

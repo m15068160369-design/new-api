@@ -47,6 +47,8 @@ const PAYMENT_TYPE_ICON_NAMES: Record<string, string> = {
   alipay: 'SiAlipay',
   stripe: 'SiStripe',
   waffo_pancake: 'LuCreditCard',
+  waffo_pancake_cn: 'SiWechat',
+  waffo_pancake_us: 'LuCreditCard',
   wxpay: 'SiWechat',
 }
 
@@ -95,6 +97,22 @@ export function PaymentMethodsVisualEditor({
         icon: getDefaultIconName('waffo_pancake'),
         name: 'Waffo Pancake',
         type: 'waffo_pancake',
+      },
+    },
+    {
+      name: 'Waffo Pancake CN',
+      template: {
+        icon: getDefaultIconName('waffo_pancake_cn'),
+        name: 'Waffo Pancake CN',
+        type: 'waffo_pancake_cn',
+      },
+    },
+    {
+      name: 'Waffo Pancake US',
+      template: {
+        icon: getDefaultIconName('waffo_pancake_us'),
+        name: 'Waffo Pancake US',
+        type: 'waffo_pancake_us',
       },
     },
     {

@@ -100,3 +100,31 @@ export async function saveWaffoPancakeConfig(params: {
   })
   return res.data
 }
+
+/**
+ * Save a Waffo Pancake dual-channel (CN/US) configuration. Blank private
+ * key keeps the persisted one; blank product ID disables the channel.
+ */
+export async function saveWaffoPancakeChannelConfig(params: {
+  channel: 'cn' | 'us'
+  merchantID: string
+  privateKey: string
+  productID: string
+  unitPrice: number
+  ratio: number
+  minTopUp: number
+}): Promise<SaveResponse> {
+  const res = await api.post<SaveResponse>(
+    '/api/option/waffo-pancake-channel/save',
+    {
+      channel: params.channel,
+      merchant_id: params.merchantID,
+      private_key: params.privateKey,
+      product_id: params.productID,
+      unit_price: params.unitPrice,
+      ratio: params.ratio,
+      min_top_up: params.minTopUp,
+    }
+  )
+  return res.data
+}
