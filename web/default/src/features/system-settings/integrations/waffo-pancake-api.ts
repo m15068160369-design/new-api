@@ -110,7 +110,6 @@ export async function saveWaffoPancakeConfig(params: {
   /** Channel-scoped pricing; omitted for the legacy gateway. */
   unitPrice?: number
   ratio?: number
-  minTopUp?: number
 }): Promise<SaveResponse> {
   const res = await api.post<SaveResponse>('/api/option/waffo-pancake/save', {
     merchant_id: params.merchantID,
@@ -123,7 +122,6 @@ export async function saveWaffoPancakeConfig(params: {
       ? { unit_price: params.unitPrice }
       : {}),
     ...(params.ratio !== undefined ? { ratio: params.ratio } : {}),
-    ...(params.minTopUp !== undefined ? { min_top_up: params.minTopUp } : {}),
   })
   return res.data
 }

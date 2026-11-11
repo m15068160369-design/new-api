@@ -123,7 +123,6 @@ func InitOptionMap() {
 	common.OptionMap["WaffoPancakeCNReturnURL"] = setting.WaffoPancakeCNReturnURL
 	common.OptionMap["WaffoPancakeCNUnitPrice"] = strconv.FormatFloat(setting.WaffoPancakeCNUnitPrice, 'f', -1, 64)
 	common.OptionMap["WaffoPancakeCNRatio"] = strconv.FormatFloat(setting.WaffoPancakeCNRatio, 'f', -1, 64)
-	common.OptionMap["WaffoPancakeCNMinTopUp"] = strconv.Itoa(setting.WaffoPancakeCNMinTopUp)
 	common.OptionMap["WaffoPancakeUSMerchantID"] = setting.WaffoPancakeUSMerchantID
 	common.OptionMap["WaffoPancakeUSPrivateKey"] = setting.WaffoPancakeUSPrivateKey
 	common.OptionMap["WaffoPancakeUSStoreID"] = setting.WaffoPancakeUSStoreID
@@ -131,7 +130,6 @@ func InitOptionMap() {
 	common.OptionMap["WaffoPancakeUSReturnURL"] = setting.WaffoPancakeUSReturnURL
 	common.OptionMap["WaffoPancakeUSUnitPrice"] = strconv.FormatFloat(setting.WaffoPancakeUSUnitPrice, 'f', -1, 64)
 	common.OptionMap["WaffoPancakeUSRatio"] = strconv.FormatFloat(setting.WaffoPancakeUSRatio, 'f', -1, 64)
-	common.OptionMap["WaffoPancakeUSMinTopUp"] = strconv.Itoa(setting.WaffoPancakeUSMinTopUp)
 	common.OptionMap["TopupGroupRatio"] = common.TopupGroupRatio2JSONString()
 	common.OptionMap["Chats"] = setting.Chats2JsonString()
 	common.OptionMap["AutoGroups"] = setting.AutoGroups2JsonString()
@@ -494,8 +492,6 @@ func updateOptionMap(key string, value string) (err error) {
 		setting.WaffoPancakeCNUnitPrice, _ = strconv.ParseFloat(value, 64)
 	case "WaffoPancakeCNRatio":
 		setting.WaffoPancakeCNRatio, _ = strconv.ParseFloat(value, 64)
-	case "WaffoPancakeCNMinTopUp":
-		setting.WaffoPancakeCNMinTopUp, _ = strconv.Atoi(value)
 	case "WaffoPancakeUSMerchantID":
 		setting.WaffoPancakeUSMerchantID = value
 	case "WaffoPancakeUSPrivateKey":
@@ -510,8 +506,6 @@ func updateOptionMap(key string, value string) (err error) {
 		setting.WaffoPancakeUSUnitPrice, _ = strconv.ParseFloat(value, 64)
 	case "WaffoPancakeUSRatio":
 		setting.WaffoPancakeUSRatio, _ = strconv.ParseFloat(value, 64)
-	case "WaffoPancakeUSMinTopUp":
-		setting.WaffoPancakeUSMinTopUp, _ = strconv.Atoi(value)
 	case "WaffoPancakeUnitPrice":
 		setting.WaffoPancakeUnitPrice, _ = strconv.ParseFloat(value, 64)
 	case "WaffoPancakeMinTopUp":

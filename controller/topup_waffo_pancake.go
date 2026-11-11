@@ -116,7 +116,6 @@ type saveWaffoPancakeRequest struct {
 	Channel   string  `json:"channel"`
 	UnitPrice float64 `json:"unit_price"`
 	Ratio     float64 `json:"ratio"`
-	MinTopUp  int     `json:"min_top_up"`
 }
 
 type createWaffoPancakePairRequest struct {
@@ -148,7 +147,6 @@ func SaveWaffoPancake(c *gin.Context) {
 		req.ProductID,
 		req.UnitPrice,
 		req.Ratio,
-		req.MinTopUp,
 	); err != nil {
 		logger.LogError(c.Request.Context(), fmt.Sprintf(
 			"Waffo Pancake 保存配置失败 channel=%q store_id=%q product_id=%q error=%q",

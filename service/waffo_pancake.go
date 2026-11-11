@@ -424,9 +424,8 @@ func CreateWaffoPancakePrimaryPair(ctx context.Context, merchantID, privateKey, 
 //
 // channel routes the write to a config group: "" (or "main") writes the
 // legacy WaffoPancake* keys (pricing fields ignored); "cn"/"us" write the
-// dual-channel WaffoPancakeCN*/US* groups and also persist unitPrice,
-// ratio and minTopUp.
-func SaveWaffoPancakeConfig(ctx context.Context, channel, merchantID, privateKey, returnURL, storeID, productID string, unitPrice, ratio float64, minTopUp int) error {
+// dual-channel WaffoPancakeCN*/US* groups and also persist unitPrice and ratio.
+func SaveWaffoPancakeConfig(ctx context.Context, channel, merchantID, privateKey, returnURL, storeID, productID string, unitPrice, ratio float64) error {
 	channel = strings.TrimSpace(strings.ToLower(channel))
 	if channel != "" && channel != "main" && channel != "cn" && channel != "us" {
 		return fmt.Errorf("channel must be \"main\", \"cn\" or \"us\"")
@@ -456,7 +455,6 @@ func SaveWaffoPancakeConfig(ctx context.Context, channel, merchantID, privateKey
 	if channel == "cn" || channel == "us" {
 		values[prefix+"UnitPrice"] = strconv.FormatFloat(unitPrice, 'f', -1, 64)
 		values[prefix+"Ratio"] = strconv.FormatFloat(ratio, 'f', -1, 64)
-		values[prefix+"MinTopUp"] = strconv.Itoa(minTopUp)
 	}
 	if err := model.UpdateOptionsBulk(values); err != nil {
 		return fmt.Errorf("persist Waffo Pancake config: %w", err)

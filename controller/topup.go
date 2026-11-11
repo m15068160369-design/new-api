@@ -89,10 +89,9 @@ func GetTopUpInfo(c *gin.Context) {
 
 		if !hasWaffoPancakeCN {
 			payMethods = append(payMethods, map[string]string{
-				"name":      "Waffo Pancake CN",
-				"type":      model.PaymentMethodWaffoPancakeCN,
-				"color":     "rgba(var(--semi-green-5), 1)",
-				"min_topup": strconv.Itoa(setting.WaffoPancakeCNMinTopUp),
+				"name":  "Waffo Pancake CN",
+				"type":  model.PaymentMethodWaffoPancakeCN,
+				"color": "rgba(var(--semi-green-5), 1)",
 			})
 		}
 	}
@@ -109,10 +108,9 @@ func GetTopUpInfo(c *gin.Context) {
 
 		if !hasWaffoPancakeUS {
 			payMethods = append(payMethods, map[string]string{
-				"name":      "Waffo Pancake US",
-				"type":      model.PaymentMethodWaffoPancakeUS,
-				"color":     "rgba(var(--semi-blue-5), 1)",
-				"min_topup": strconv.Itoa(setting.WaffoPancakeUSMinTopUp),
+				"name":  "Waffo Pancake US",
+				"type":  model.PaymentMethodWaffoPancakeUS,
+				"color": "rgba(var(--semi-blue-5), 1)",
 			})
 		}
 	}

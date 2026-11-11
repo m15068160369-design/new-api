@@ -152,12 +152,8 @@ export interface TopupInfo {
   waffo_pancake_min_topup?: number
   /** Whether the CNY (WeChat Pay) dual channel is enabled */
   enable_waffo_pancake_cn_topup?: boolean
-  /** Minimum topup amount for the CNY dual channel */
-  waffo_pancake_cn_min_topup?: number
   /** Whether the USD dual channel is enabled */
   enable_waffo_pancake_us_topup?: boolean
-  /** Minimum topup amount for the USD dual channel */
-  waffo_pancake_us_min_topup?: number
   /** Whether redemption code usage is enabled */
   enable_redemption?: boolean
   /** Whether compliance confirmation has been completed */

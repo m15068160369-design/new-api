@@ -109,6 +109,18 @@ export function PaymentMethodDialog({
       name: 'Waffo Pancake',
       value: 'waffo_pancake',
     },
+    {
+      iconName: 'SiWechat',
+      label: 'Waffo Pancake CN (waffo_pancake_cn)',
+      name: 'Waffo Pancake CN',
+      value: 'waffo_pancake_cn',
+    },
+    {
+      iconName: 'LuCreditCard',
+      label: 'Waffo Pancake US (waffo_pancake_us)',
+      name: 'Waffo Pancake US',
+      value: 'waffo_pancake_us',
+    },
   ]
   const getPaymentTypeOption = (value: string) =>
     paymentTypeOptions.find((option) => option.value === value)

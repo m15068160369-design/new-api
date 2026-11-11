@@ -38,7 +38,6 @@ type waffoPancakeChannel struct {
 	productID   func() string
 	unitPrice   func() float64
 	ratio       func() float64
-	minTopUp    func() int
 }
 
 var waffoPancakeCNChannel = waffoPancakeChannel{
@@ -52,7 +51,6 @@ var waffoPancakeCNChannel = waffoPancakeChannel{
 	productID:  func() string { return setting.WaffoPancakeCNProductID },
 	unitPrice:  func() float64 { return setting.WaffoPancakeCNUnitPrice },
 	ratio:      func() float64 { return setting.WaffoPancakeCNRatio },
-	minTopUp:   func() int { return setting.WaffoPancakeCNMinTopUp },
 }
 
 var waffoPancakeUSChannel = waffoPancakeChannel{
@@ -66,7 +64,6 @@ var waffoPancakeUSChannel = waffoPancakeChannel{
 	productID:  func() string { return setting.WaffoPancakeUSProductID },
 	unitPrice:  func() float64 { return setting.WaffoPancakeUSUnitPrice },
 	ratio:      func() float64 { return setting.WaffoPancakeUSRatio },
-	minTopUp:   func() int { return setting.WaffoPancakeUSMinTopUp },
 }
 
 // getWaffoPancakeChannelPayMoney prices a top-up on the channel:
@@ -113,10 +110,6 @@ func handleWaffoPancakeChannelAmount(c *gin.Context, ch waffoPancakeChannel) {
 		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "参数错误"})
 		return
 	}
-	if req.Amount < int64(ch.minTopUp()) {
-		c.JSON(http.StatusOK, gin.H{"message": "error", "data": fmt.Sprintf("充值数量不能小于 %d", ch.minTopUp())})
-		return
-	}
 
 	id := c.GetInt("id")
 	group, err := model.GetUserGroup(id, true)
@@ -143,10 +136,6 @@ func handleWaffoPancakeChannelPay(c *gin.Context, ch waffoPancakeChannel) {
 	var req WaffoPancakePayRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "参数错误"})
-		return
-	}
-	if req.Amount < int64(ch.minTopUp()) {
-		c.JSON(http.StatusOK, gin.H{"message": "error", "data": fmt.Sprintf("充值数量不能小于 %d", ch.minTopUp())})
 		return
 	}
 

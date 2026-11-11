@@ -286,7 +286,6 @@ export function PaymentSettingsSection({
     React.useState<WaffoPancakePricing>({
       unitPrice: 1,
       ratio: 1,
-      minTopUp: 1,
     })
   const [waffoPancakeCNSelection, setWaffoPancakeCNSelection] =
     React.useState<WaffoPancakeBinding>({ storeID: '', productID: '' })
@@ -311,7 +310,6 @@ export function PaymentSettingsSection({
     React.useState<WaffoPancakePricing>({
       unitPrice: 1,
       ratio: 1,
-      minTopUp: 1,
     })
   const [waffoPancakeUSSelection, setWaffoPancakeUSSelection] =
     React.useState<WaffoPancakeBinding>({ storeID: '', productID: '' })
@@ -360,8 +358,6 @@ export function PaymentSettingsSection({
           Number.parseFloat(persistedOptions[`${prefix}UnitPrice`] ?? '') || 1,
         ratio:
           Number.parseFloat(persistedOptions[`${prefix}Ratio`] ?? '') || 1,
-        minTopUp:
-          Number.parseInt(persistedOptions[`${prefix}MinTopUp`] ?? '', 10) || 1,
       },
       // Anchoring the dropdowns on the persisted store/product keeps the tab
       // from silently rebinding to the first product in the catalog.
@@ -933,7 +929,6 @@ export function PaymentSettingsSection({
           productID: selection.productID,
           unitPrice: pricing.unitPrice,
           ratio: pricing.ratio,
-          minTopUp: pricing.minTopUp,
         })
         if (
           body?.message === 'success' &&

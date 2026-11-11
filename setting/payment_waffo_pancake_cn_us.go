@@ -17,7 +17,6 @@ var (
 	WaffoPancakeCNReturnURL  string
 	WaffoPancakeCNUnitPrice  float64 = 1.0
 	WaffoPancakeCNRatio      float64 = 1.0
-	WaffoPancakeCNMinTopUp   int     = 1
 
 	WaffoPancakeUSMerchantID string
 	WaffoPancakeUSPrivateKey string
@@ -26,5 +25,4 @@ var (
 	WaffoPancakeUSReturnURL  string
 	WaffoPancakeUSUnitPrice  float64 = 1.0
 	WaffoPancakeUSRatio      float64 = 1.0
-	WaffoPancakeUSMinTopUp   int     = 1
 )

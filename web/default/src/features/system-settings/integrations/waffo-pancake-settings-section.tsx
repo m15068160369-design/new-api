@@ -60,7 +60,6 @@ export type WaffoPancakeSettingsFieldValues = Record<string, string>
 export type WaffoPancakePricing = {
   unitPrice: number
   ratio: number
-  minTopUp: number
 }
 
 export type WaffoPancakePricingField = keyof WaffoPancakePricing
@@ -683,9 +682,9 @@ export function WaffoPancakeSettingsSection({
                 )}
               </p>
             </div>
-            <div className='grid gap-4 sm:grid-cols-3'>
+            <div className='grid gap-4 sm:grid-cols-2'>
               <div className='grid gap-1.5'>
-                <Label>{t('Unit price')}</Label>
+                <Label>{t('汇率')}</Label>
                 <Input
                   type='number'
                   min='0'
@@ -699,11 +698,11 @@ export function WaffoPancakeSettingsSection({
                   }
                 />
                 <p className='text-muted-foreground text-xs'>
-                  {t('Price per 1 unit of balance on this channel')}
+                  {channel === 'cn' ? t('¥ / 额度') : t('$ / 额度')}
                 </p>
               </div>
               <div className='grid gap-1.5'>
-                <Label>{t('Channel ratio')}</Label>
+                <Label>{t('倍率')}</Label>
                 <Input
                   type='number'
                   min='0'
@@ -717,25 +716,7 @@ export function WaffoPancakeSettingsSection({
                   }
                 />
                 <p className='text-muted-foreground text-xs'>
-                  {t('Extra multiplier, e.g. 0.9 for a 10% off promo')}
-                </p>
-              </div>
-              <div className='grid gap-1.5'>
-                <Label>{t('Minimum top-up')}</Label>
-                <Input
-                  type='number'
-                  min='1'
-                  step='1'
-                  value={pricing.minTopUp}
-                  onChange={(event) =>
-                    onPricingChange?.(
-                      'minTopUp',
-                      toNumber(event.target.value, pricing.minTopUp)
-                    )
-                  }
-                />
-                <p className='text-muted-foreground text-xs'>
-                  {t('Minimum units per top-up on this channel')}
+                  {t('如 0.9 = 九折')}
                 </p>
               </div>
             </div>
