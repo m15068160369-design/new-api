@@ -22,6 +22,12 @@ import { api } from '@/lib/api'
 // controller/topup_waffo_pancake.go: empty body creds make the backend
 // fall back to persisted OptionMap values, so returning admins don't
 // have to re-paste the private key (stripped from GET /api/option/).
+//
+// The CN/US split reuses these same endpoints, scoped by `channel`. Each
+// channel is an independent gateway with its own credentials, product and
+// pricing, so catalog/pair/save all have to be told which one they mean.
+
+export type WaffoPancakeChannel = 'cn' | 'us'
 
 export interface CatalogProduct {
   id: string
@@ -62,11 +68,18 @@ export type SaveResponse = BackendBody<{ product_id: string; store_id: string }>
 
 export async function listWaffoPancakeCatalog(
   merchantID: string,
-  privateKey: string
+  privateKey: string,
+  channel?: WaffoPancakeChannel
 ): Promise<CatalogResponse> {
   const res = await api.get<CatalogResponse>(
     '/api/option/waffo-pancake/catalog',
-    { params: { merchant_id: merchantID, private_key: privateKey } }
+    {
+      params: {
+        merchant_id: merchantID,
+        private_key: privateKey,
+        ...(channel ? { channel } : {}),
+      },
+    }
   )
   return res.data
 }
@@ -75,11 +88,13 @@ export async function createWaffoPancakePair(params: {
   merchantID: string
   privateKey: string
   returnURL: string
+  channel?: WaffoPancakeChannel
 }): Promise<PairResponse> {
   const res = await api.post<PairResponse>('/api/option/waffo-pancake/pair', {
     merchant_id: params.merchantID,
     private_key: params.privateKey,
     return_url: params.returnURL,
+    ...(params.channel ? { channel: params.channel } : {}),
   })
   return res.data
 }
@@ -90,6 +105,12 @@ export async function saveWaffoPancakeConfig(params: {
   returnURL: string
   storeID: string
   productID: string
+  /** Omitted for the legacy single-instance gateway. */
+  channel?: WaffoPancakeChannel
+  /** Channel-scoped pricing; omitted for the legacy gateway. */
+  unitPrice?: number
+  ratio?: number
+  minTopUp?: number
 }): Promise<SaveResponse> {
   const res = await api.post<SaveResponse>('/api/option/waffo-pancake/save', {
     merchant_id: params.merchantID,
@@ -97,34 +118,12 @@ export async function saveWaffoPancakeConfig(params: {
     return_url: params.returnURL,
     store_id: params.storeID,
     product_id: params.productID,
+    ...(params.channel ? { channel: params.channel } : {}),
+    ...(params.unitPrice !== undefined
+      ? { unit_price: params.unitPrice }
+      : {}),
+    ...(params.ratio !== undefined ? { ratio: params.ratio } : {}),
+    ...(params.minTopUp !== undefined ? { min_top_up: params.minTopUp } : {}),
   })
-  return res.data
-}
-
-/**
- * Save a Waffo Pancake dual-channel (CN/US) configuration. Blank private
- * key keeps the persisted one; blank product ID disables the channel.
- */
-export async function saveWaffoPancakeChannelConfig(params: {
-  channel: 'cn' | 'us'
-  merchantID: string
-  privateKey: string
-  productID: string
-  unitPrice: number
-  ratio: number
-  minTopUp: number
-}): Promise<SaveResponse> {
-  const res = await api.post<SaveResponse>(
-    '/api/option/waffo-pancake-channel/save',
-    {
-      channel: params.channel,
-      merchant_id: params.merchantID,
-      private_key: params.privateKey,
-      product_id: params.productID,
-      unit_price: params.unitPrice,
-      ratio: params.ratio,
-      min_top_up: params.minTopUp,
-    }
-  )
   return res.data
 }

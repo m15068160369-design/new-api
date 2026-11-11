@@ -38,6 +38,7 @@ import {
   type CatalogStore,
   type PairOrphanError,
   type PairResult,
+  type WaffoPancakeChannel,
   createWaffoPancakePair,
   listWaffoPancakeCatalog,
 } from './waffo-pancake-api'
@@ -48,27 +49,66 @@ export type WaffoPancakeSettingsValues = {
   WaffoPancakeReturnURL: string
 }
 
+/**
+ * Values bag actually handed to the section. The legacy gateway keys it with
+ * the bare `WaffoPancake*` names; the CN/US gateways key the same three fields
+ * with their configured `fieldPrefix` (`WaffoPancakeCNMerchantID`, ...).
+ */
+export type WaffoPancakeSettingsFieldValues = Record<string, string>
+
+/** Channel-scoped pricing, only rendered for the CN/US gateways. */
+export type WaffoPancakePricing = {
+  unitPrice: number
+  ratio: number
+  minTopUp: number
+}
+
+export type WaffoPancakePricingField = keyof WaffoPancakePricing
+
 export interface WaffoPancakeBinding {
   storeID: string
   productID: string
 }
 
 interface Props {
-  defaultValues: WaffoPancakeSettingsValues
-  values: WaffoPancakeSettingsValues
-  onValueChange: <K extends keyof WaffoPancakeSettingsValues>(
-    key: K,
-    value: WaffoPancakeSettingsValues[K]
-  ) => void
+  defaultValues: WaffoPancakeSettingsFieldValues
+  values: WaffoPancakeSettingsFieldValues
+  onValueChange: (key: string, value: string) => void
   selectedBinding: WaffoPancakeBinding
   savedBinding: WaffoPancakeBinding
   onSelectedBindingChange: (value: SetStateAction<WaffoPancakeBinding>) => void
+  /**
+   * Option-name prefix: 'WaffoPancake' (default, legacy gateway),
+   * 'WaffoPancakeCN' or 'WaffoPancakeUS'. Every value key is derived from it.
+   */
+  fieldPrefix?: string
+  /**
+   * Only supplied by the CN/US gateways. When absent the pricing block does
+   * not render and the UI is byte-for-byte the legacy one.
+   */
+  pricing?: WaffoPancakePricing
+  onPricingChange?: (field: WaffoPancakePricingField, value: number) => void
 }
 
 const PANCAKE_DASHBOARD_URL = 'https://pancake.waffo.ai/merchant/dashboard'
 const DEFAULT_NEW_STORE_NAME = 'new-api-store'
 const DEFAULT_NEW_PRODUCT_NAME = 'new-api-charge-product'
 const DEFAULT_NEW_PAIR_NAME = `${DEFAULT_NEW_STORE_NAME} + ${DEFAULT_NEW_PRODUCT_NAME}`
+
+// `fieldPrefix` → backend channel selector. The legacy gateway stays
+// undefined so its requests are unchanged.
+function channelForPrefix(
+  fieldPrefix: string
+): WaffoPancakeChannel | undefined {
+  if (fieldPrefix === 'WaffoPancakeCN') return 'cn'
+  if (fieldPrefix === 'WaffoPancakeUS') return 'us'
+  return undefined
+}
+
+function toNumber(raw: string, fallback: number) {
+  const parsed = Number.parseFloat(raw)
+  return Number.isFinite(parsed) ? parsed : fallback
+}
 
 export function WaffoPancakeSettingsSection({
   defaultValues,
@@ -77,8 +117,16 @@ export function WaffoPancakeSettingsSection({
   selectedBinding,
   savedBinding,
   onSelectedBindingChange,
+  fieldPrefix = 'WaffoPancake',
+  pricing,
+  onPricingChange,
 }: Props) {
   const { t } = useTranslation()
+
+  const merchantIDKey = `${fieldPrefix}MerchantID`
+  const privateKeyKey = `${fieldPrefix}PrivateKey`
+  const returnURLKey = `${fieldPrefix}ReturnURL`
+  const channel = channelForPrefix(fieldPrefix)
 
   const [phase, setPhase] = React.useState<'idle' | 'verifying'>('idle')
   const [catalog, setCatalog] = React.useState<CatalogStore[]>([])
@@ -87,7 +135,7 @@ export function WaffoPancakeSettingsSection({
   const chosenProductID = selectedBinding.productID
   const storeID = savedBinding.storeID
   const productID = savedBinding.productID
-  const returnURL = values.WaffoPancakeReturnURL
+  const returnURL = values[returnURLKey] ?? ''
 
   const initialRef = React.useRef(defaultValues)
   const defaultsSignature = React.useMemo(
@@ -105,12 +153,14 @@ export function WaffoPancakeSettingsSection({
   // wipe whatever the operator just typed.
   const didMountRef = React.useRef(false)
   React.useEffect(() => {
-    const parsed = JSON.parse(defaultsSignature) as WaffoPancakeSettingsValues
+    const parsed = JSON.parse(defaultsSignature) as WaffoPancakeSettingsFieldValues
     initialRef.current = parsed
     if (didMountRef.current) return
     didMountRef.current = true
-    lastVerifiedSignature.current = `${parsed.WaffoPancakeMerchantID.trim()}|${parsed.WaffoPancakePrivateKey.trim()}`
-  }, [defaultsSignature])
+    lastVerifiedSignature.current = `${(parsed[merchantIDKey] ?? '').trim()}|${(
+      parsed[privateKeyKey] ?? ''
+    ).trim()}`
+  }, [defaultsSignature, merchantIDKey, privateKeyKey])
 
   const productsForChosenStore = React.useMemo(() => {
     if (!chosenStoreID) return []
@@ -155,7 +205,11 @@ export function WaffoPancakeSettingsSection({
       const serial = ++fetchSerialRef.current
       let stores: CatalogStore[]
       try {
-        const body = await listWaffoPancakeCatalog(merchantID, privateKey)
+        const body = await listWaffoPancakeCatalog(
+          merchantID,
+          privateKey,
+          channel
+        )
         if (serial !== fetchSerialRef.current) return
         if (
           body?.message === 'success' &&
@@ -220,11 +274,11 @@ export function WaffoPancakeSettingsSection({
       }
       setPhase('idle')
     },
-    [onSelectedBindingChange, productID, t]
+    [channel, onSelectedBindingChange, productID, t]
   )
 
-  const watchedMerchantID = values.WaffoPancakeMerchantID || ''
-  const watchedPrivateKey = values.WaffoPancakePrivateKey || ''
+  const watchedMerchantID = values[merchantIDKey] ?? ''
+  const watchedPrivateKey = values[privateKeyKey] ?? ''
   React.useEffect(() => {
     const m = watchedMerchantID.trim()
     const k = watchedPrivateKey.trim()
@@ -243,25 +297,26 @@ export function WaffoPancakeSettingsSection({
   // admin opens the page with empty key. Send blank creds in the body —
   // the catalog controller falls back to the persisted OptionMap creds.
   const initialLoadRef = React.useRef(false)
+  const defaultMerchantID = defaultValues[merchantIDKey] ?? ''
   React.useEffect(() => {
     if (initialLoadRef.current) return
-    if (!defaultValues.WaffoPancakeMerchantID.trim()) return
+    if (!defaultMerchantID.trim()) return
     initialLoadRef.current = true
     const timer = window.setTimeout(() => {
       setPhase('verifying')
       void verifyAndFetchCatalog('', '')
     }, 0)
     return () => window.clearTimeout(timer)
-  }, [defaultValues.WaffoPancakeMerchantID, verifyAndFetchCatalog])
+  }, [defaultMerchantID, verifyAndFetchCatalog])
 
   // Returns typed creds when the operator edited either field; otherwise
   // blanks so the backend falls back to persisted creds. Without this,
   // returning admins (saved merchant ID but empty key field) would send
   // a mixed-state body that the backend rejects.
   const readCreds = () => {
-    const formMerchant = (values.WaffoPancakeMerchantID || '').trim()
-    const formKey = (values.WaffoPancakePrivateKey || '').trim()
-    const saved = (defaultValues.WaffoPancakeMerchantID || '').trim()
+    const formMerchant = (values[merchantIDKey] ?? '').trim()
+    const formKey = (values[privateKeyKey] ?? '').trim()
+    const saved = (defaultValues[merchantIDKey] ?? '').trim()
     const edited = formMerchant !== saved || formKey.length > 0
     if (!edited) return { merchantID: '', privateKey: '' }
     return { merchantID: formMerchant, privateKey: formKey }
@@ -295,6 +350,7 @@ export function WaffoPancakeSettingsSection({
         merchantID,
         privateKey,
         returnURL: trimmedReturn,
+        channel,
       })
       if (
         body?.message === 'success' &&
@@ -345,7 +401,7 @@ export function WaffoPancakeSettingsSection({
   // "Not edited" = MerchantID unchanged AND PrivateKey field blank, in
   // which case the backend falls back to persisted creds. Otherwise we
   // require both fields filled (mixed states would fail signature check).
-  const savedMerchantID = (defaultValues.WaffoPancakeMerchantID || '').trim()
+  const savedMerchantID = (defaultValues[merchantIDKey] ?? '').trim()
   const formMerchantID = watchedMerchantID.trim()
   const formPrivateKey = watchedPrivateKey.trim()
   const credsEdited =
@@ -424,10 +480,8 @@ export function WaffoPancakeSettingsSection({
           <Input
             placeholder='MER_xxx'
             autoComplete='off'
-            value={values.WaffoPancakeMerchantID}
-            onChange={(event) =>
-              onValueChange('WaffoPancakeMerchantID', event.target.value)
-            }
+            value={values[merchantIDKey] ?? ''}
+            onChange={(event) => onValueChange(merchantIDKey, event.target.value)}
           />
         </div>
 
@@ -437,10 +491,8 @@ export function WaffoPancakeSettingsSection({
             rows={4}
             placeholder={t('Leave blank to keep the existing key')}
             autoComplete='new-password'
-            value={values.WaffoPancakePrivateKey}
-            onChange={(event) =>
-              onValueChange('WaffoPancakePrivateKey', event.target.value)
-            }
+            value={values[privateKeyKey] ?? ''}
+            onChange={(event) => onValueChange(privateKeyKey, event.target.value)}
             className='font-mono text-xs'
           />
           <p className='text-muted-foreground text-xs'>
@@ -504,9 +556,7 @@ export function WaffoPancakeSettingsSection({
               <Input
                 placeholder='https://example.com/console/topup'
                 value={returnURL}
-                onChange={(event) =>
-                  onValueChange('WaffoPancakeReturnURL', event.target.value)
-                }
+                onChange={(event) => onValueChange(returnURLKey, event.target.value)}
                 className='flex-1'
               />
               <Button
@@ -617,6 +667,80 @@ export function WaffoPancakeSettingsSection({
             ) : null}
           </div>
         </div>
+
+        {/*
+          Channel pricing — only for the CN/US gateways, which each carry
+          their own unit price, channel ratio and minimum top-up. The legacy
+          single-instance gateway omits `pricing`, so nothing renders here.
+        */}
+        {pricing ? (
+          <div className='space-y-3 rounded-md border p-4 lg:col-span-2'>
+            <div>
+              <h4 className='font-medium'>{t('Channel pricing')}</h4>
+              <p className='text-muted-foreground text-xs'>
+                {t(
+                  'Independent of the other channel. Charged amount = top-up amount × unit price × group ratio × discount × channel ratio.'
+                )}
+              </p>
+            </div>
+            <div className='grid gap-4 sm:grid-cols-3'>
+              <div className='grid gap-1.5'>
+                <Label>{t('Unit price')}</Label>
+                <Input
+                  type='number'
+                  min='0'
+                  step='0.01'
+                  value={pricing.unitPrice}
+                  onChange={(event) =>
+                    onPricingChange?.(
+                      'unitPrice',
+                      toNumber(event.target.value, pricing.unitPrice)
+                    )
+                  }
+                />
+                <p className='text-muted-foreground text-xs'>
+                  {t('Price per 1 unit of balance on this channel')}
+                </p>
+              </div>
+              <div className='grid gap-1.5'>
+                <Label>{t('Channel ratio')}</Label>
+                <Input
+                  type='number'
+                  min='0'
+                  step='0.01'
+                  value={pricing.ratio}
+                  onChange={(event) =>
+                    onPricingChange?.(
+                      'ratio',
+                      toNumber(event.target.value, pricing.ratio)
+                    )
+                  }
+                />
+                <p className='text-muted-foreground text-xs'>
+                  {t('Extra multiplier, e.g. 0.9 for a 10% off promo')}
+                </p>
+              </div>
+              <div className='grid gap-1.5'>
+                <Label>{t('Minimum top-up')}</Label>
+                <Input
+                  type='number'
+                  min='1'
+                  step='1'
+                  value={pricing.minTopUp}
+                  onChange={(event) =>
+                    onPricingChange?.(
+                      'minTopUp',
+                      toNumber(event.target.value, pricing.minTopUp)
+                    )
+                  }
+                />
+                <p className='text-muted-foreground text-xs'>
+                  {t('Minimum units per top-up on this channel')}
+                </p>
+              </div>
+            </div>
+          </div>
+        ) : null}
       </div>
     </div>
   )

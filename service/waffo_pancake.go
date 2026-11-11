@@ -346,11 +346,16 @@ func CreateWaffoPancakeProductForPlan(ctx context.Context, merchantID, privateKe
 
 // CreateWaffoPancakePrimaryProduct mints (and publishes) the wallet-top-up
 // OnetimeProduct under storeID. Per-checkout price overrides via PriceSnapshot
-// are what make the "1.00" seed price irrelevant at runtime.
-func CreateWaffoPancakePrimaryProduct(ctx context.Context, merchantID, privateKey, storeID, returnURL string) (string, error) {
+// are what make the "1.00" seed price irrelevant at runtime. currency seeds
+// the placeholder price table ("CNY" for the CN channel, "USD" otherwise).
+func CreateWaffoPancakePrimaryProduct(ctx context.Context, merchantID, privateKey, storeID, returnURL, currency string) (string, error) {
 	storeID = strings.TrimSpace(storeID)
 	if storeID == "" {
 		return "", fmt.Errorf("store id is required to create a product")
+	}
+	currency = strings.TrimSpace(currency)
+	if currency == "" {
+		currency = "USD"
 	}
 	client, err := newWaffoPancakeClientFromCreds(merchantID, privateKey)
 	if err != nil {
@@ -360,7 +365,7 @@ func CreateWaffoPancakePrimaryProduct(ctx context.Context, merchantID, privateKe
 		StoreID: storeID,
 		Name:    defaultWaffoPancakeProductName,
 		Prices: pancake.Prices{
-			"USD": {
+			currency: {
 				Amount:      "1.00", // overridden at checkout via PriceSnapshot
 				TaxCategory: pancake.TaxCategory("saas"),
 			},
@@ -391,12 +396,12 @@ type WaffoPancakePairResult struct {
 // CreateWaffoPancakePrimaryPair mints a Store + OnetimeProduct in one
 // round-trip — the canonical "+ Create" entry point. Nothing is persisted
 // to settings; the operator's final Save commits the chosen IDs.
-func CreateWaffoPancakePrimaryPair(ctx context.Context, merchantID, privateKey, returnURL string) (*WaffoPancakePairResult, error) {
+func CreateWaffoPancakePrimaryPair(ctx context.Context, merchantID, privateKey, returnURL, currency string) (*WaffoPancakePairResult, error) {
 	storeID, err := CreateWaffoPancakePrimaryStore(ctx, merchantID, privateKey)
 	if err != nil {
 		return nil, err
 	}
-	productID, err := CreateWaffoPancakePrimaryProduct(ctx, merchantID, privateKey, storeID, returnURL)
+	productID, err := CreateWaffoPancakePrimaryProduct(ctx, merchantID, privateKey, storeID, returnURL, currency)
 	if err != nil {
 		return &WaffoPancakePairResult{
 			StoreID:     storeID,
@@ -412,39 +417,27 @@ func CreateWaffoPancakePrimaryPair(ctx context.Context, merchantID, privateKey, 
 	}, nil
 }
 
-// SaveWaffoPancakeChannelConfig persists one dual-channel's configuration in
-// a single bulk update. A blank private key keeps the persisted one
-// (Stripe-style API-secret UX); a blank product ID disables the channel.
-func SaveWaffoPancakeChannelConfig(ctx context.Context, channel, merchantID, privateKey, productID string, unitPrice, ratio float64, minTopUp int) error {
-	channel = strings.TrimSpace(strings.ToLower(channel))
-	if channel != "cn" && channel != "us" {
-		return fmt.Errorf("channel must be \"cn\" or \"us\"")
-	}
-	prefix := "WaffoPancakeCN"
-	if channel == "us" {
-		prefix = "WaffoPancakeUS"
-	}
-	values := map[string]string{
-		prefix + "MerchantID": strings.TrimSpace(merchantID),
-		prefix + "ProductID":  strings.TrimSpace(productID),
-		prefix + "UnitPrice":  strconv.FormatFloat(unitPrice, 'f', -1, 64),
-		prefix + "Ratio":      strconv.FormatFloat(ratio, 'f', -1, 64),
-		prefix + "MinTopUp":   strconv.Itoa(minTopUp),
-	}
-	if pk := strings.TrimSpace(privateKey); pk != "" {
-		values[prefix+"PrivateKey"] = pk
-	}
-	if err := model.UpdateOptionsBulk(values); err != nil {
-		return fmt.Errorf("persist Waffo Pancake %s channel config: %w", channel, err)
-	}
-	return nil
-}
-
 // SaveWaffoPancakeConfig persists the operator-controlled fields atomically
 // at the end of the configuration flow via model.UpdateOptionsBulk (single
 // DB transaction). A blank privateKey is treated as "keep current"
 // (Stripe-style API-secret UX) and is omitted from the bulk payload.
-func SaveWaffoPancakeConfig(ctx context.Context, merchantID, privateKey, returnURL, storeID, productID string) error {
+//
+// channel routes the write to a config group: "" (or "main") writes the
+// legacy WaffoPancake* keys (pricing fields ignored); "cn"/"us" write the
+// dual-channel WaffoPancakeCN*/US* groups and also persist unitPrice,
+// ratio and minTopUp.
+func SaveWaffoPancakeConfig(ctx context.Context, channel, merchantID, privateKey, returnURL, storeID, productID string, unitPrice, ratio float64, minTopUp int) error {
+	channel = strings.TrimSpace(strings.ToLower(channel))
+	if channel != "" && channel != "main" && channel != "cn" && channel != "us" {
+		return fmt.Errorf("channel must be \"main\", \"cn\" or \"us\"")
+	}
+	prefix := "WaffoPancake"
+	switch channel {
+	case "cn":
+		prefix = "WaffoPancakeCN"
+	case "us":
+		prefix = "WaffoPancakeUS"
+	}
 	merchantID = strings.TrimSpace(merchantID)
 	storeID = strings.TrimSpace(storeID)
 	productID = strings.TrimSpace(productID)
@@ -452,13 +445,18 @@ func SaveWaffoPancakeConfig(ctx context.Context, merchantID, privateKey, returnU
 		return fmt.Errorf("merchant id, store id, and product id are required to save")
 	}
 	values := map[string]string{
-		"WaffoPancakeMerchantID": merchantID,
-		"WaffoPancakeReturnURL":  strings.TrimSpace(returnURL),
-		"WaffoPancakeStoreID":    storeID,
-		"WaffoPancakeProductID":  productID,
+		prefix + "MerchantID": merchantID,
+		prefix + "ReturnURL":  strings.TrimSpace(returnURL),
+		prefix + "StoreID":    storeID,
+		prefix + "ProductID":  productID,
 	}
 	if pk := strings.TrimSpace(privateKey); pk != "" {
-		values["WaffoPancakePrivateKey"] = pk
+		values[prefix+"PrivateKey"] = pk
+	}
+	if channel == "cn" || channel == "us" {
+		values[prefix+"UnitPrice"] = strconv.FormatFloat(unitPrice, 'f', -1, 64)
+		values[prefix+"Ratio"] = strconv.FormatFloat(ratio, 'f', -1, 64)
+		values[prefix+"MinTopUp"] = strconv.Itoa(minTopUp)
 	}
 	if err := model.UpdateOptionsBulk(values); err != nil {
 		return fmt.Errorf("persist Waffo Pancake config: %w", err)

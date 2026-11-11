@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { zodResolver } from '@hookform/resolvers/zod'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Code2, Eye, ShieldAlert } from 'lucide-react'
 import * as React from 'react'
 import { useForm, type Resolver } from 'react-hook-form'
@@ -46,6 +46,7 @@ import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Textarea } from '@/components/ui/textarea'
+import { api } from '@/lib/api'
 import { cn } from '@/lib/utils'
 
 import { confirmPaymentCompliance } from '../api'
@@ -70,11 +71,10 @@ import {
 } from './utils'
 import { saveWaffoPancakeConfig } from './waffo-pancake-api'
 import {
-  WaffoPancakeChannelSettingsSection,
-} from './waffo-pancake-channel-settings-section'
-import {
   WaffoPancakeSettingsSection,
   type WaffoPancakeBinding,
+  type WaffoPancakePricing,
+  type WaffoPancakePricingField,
   type WaffoPancakeSettingsValues,
 } from './waffo-pancake-settings-section'
 import {
@@ -263,6 +263,127 @@ export function PaymentSettingsSection({
       productID: waffoPancakeProvisionedProductID ?? '',
     })
 
+  // --- Waffo Pancake CN / US split channels --------------------------------
+  // Each channel is an independent gateway (own credentials, own product, own
+  // unit price / ratio / minimum top-up), so it keeps its own values, binding
+  // and pricing state instead of riding the react-hook-form used by the
+  // legacy single-instance gateway below.
+  const [waffoPancakeCNValues, setWaffoPancakeCNValues] = React.useState<
+    Record<string, string>
+  >({
+    WaffoPancakeCNMerchantID: '',
+    WaffoPancakeCNPrivateKey: '',
+    WaffoPancakeCNReturnURL: '',
+  })
+  const [waffoPancakeCNDefaults, setWaffoPancakeCNDefaults] = React.useState<
+    Record<string, string>
+  >({
+    WaffoPancakeCNMerchantID: '',
+    WaffoPancakeCNPrivateKey: '',
+    WaffoPancakeCNReturnURL: '',
+  })
+  const [waffoPancakeCNPricing, setWaffoPancakeCNPricing] =
+    React.useState<WaffoPancakePricing>({
+      unitPrice: 1,
+      ratio: 1,
+      minTopUp: 1,
+    })
+  const [waffoPancakeCNSelection, setWaffoPancakeCNSelection] =
+    React.useState<WaffoPancakeBinding>({ storeID: '', productID: '' })
+  const [waffoPancakeCNSavedBinding, setWaffoPancakeCNSavedBinding] =
+    React.useState<WaffoPancakeBinding>({ storeID: '', productID: '' })
+
+  const [waffoPancakeUSValues, setWaffoPancakeUSValues] = React.useState<
+    Record<string, string>
+  >({
+    WaffoPancakeUSMerchantID: '',
+    WaffoPancakeUSPrivateKey: '',
+    WaffoPancakeUSReturnURL: '',
+  })
+  const [waffoPancakeUSDefaults, setWaffoPancakeUSDefaults] = React.useState<
+    Record<string, string>
+  >({
+    WaffoPancakeUSMerchantID: '',
+    WaffoPancakeUSPrivateKey: '',
+    WaffoPancakeUSReturnURL: '',
+  })
+  const [waffoPancakeUSPricing, setWaffoPancakeUSPricing] =
+    React.useState<WaffoPancakePricing>({
+      unitPrice: 1,
+      ratio: 1,
+      minTopUp: 1,
+    })
+  const [waffoPancakeUSSelection, setWaffoPancakeUSSelection] =
+    React.useState<WaffoPancakeBinding>({ storeID: '', productID: '' })
+  const [waffoPancakeUSSavedBinding, setWaffoPancakeUSSavedBinding] =
+    React.useState<WaffoPancakeBinding>({ storeID: '', productID: '' })
+  const [waffoSavingChannel, setWaffoSavingChannel] = React.useState<
+    'cn' | 'us' | null
+  >(null)
+
+  // The split channels load their own persisted values so nothing new has to
+  // be threaded through the section registry / BillingSettings props.
+  const { data: rawOptions } = useQuery({
+    queryKey: ['system-options'],
+    queryFn: async () => {
+      const res = await api.get('/api/option/')
+      return res.data as {
+        success: boolean
+        data?: Array<{ key: string; value: string }>
+      }
+    },
+  })
+
+  const persistedOptions = React.useMemo(() => {
+    const map: Record<string, string> = {}
+    for (const entry of rawOptions?.data ?? []) {
+      map[entry.key] = entry.value
+    }
+    return map
+  }, [rawOptions])
+
+  // Load once. GET /api/option/ strips the private key, so it loads blank —
+  // blank on save means "keep the stored key", same contract as the legacy
+  // gateway, which is why defaults and values start out identical.
+  const channelLoadRef = React.useRef(false)
+  React.useEffect(() => {
+    if (channelLoadRef.current || !rawOptions?.data) return
+    channelLoadRef.current = true
+    const readChannel = (prefix: string) => ({
+      values: {
+        [`${prefix}MerchantID`]: persistedOptions[`${prefix}MerchantID`] ?? '',
+        [`${prefix}PrivateKey`]: '',
+        [`${prefix}ReturnURL`]: persistedOptions[`${prefix}ReturnURL`] ?? '',
+      } as Record<string, string>,
+      pricing: {
+        unitPrice:
+          Number.parseFloat(persistedOptions[`${prefix}UnitPrice`] ?? '') || 1,
+        ratio:
+          Number.parseFloat(persistedOptions[`${prefix}Ratio`] ?? '') || 1,
+        minTopUp:
+          Number.parseInt(persistedOptions[`${prefix}MinTopUp`] ?? '', 10) || 1,
+      },
+      // Anchoring the dropdowns on the persisted store/product keeps the tab
+      // from silently rebinding to the first product in the catalog.
+      binding: {
+        storeID: persistedOptions[`${prefix}StoreID`] ?? '',
+        productID: persistedOptions[`${prefix}ProductID`] ?? '',
+      } as WaffoPancakeBinding,
+    })
+    const cn = readChannel('WaffoPancakeCN')
+    const us = readChannel('WaffoPancakeUS')
+    setWaffoPancakeCNValues(cn.values)
+    setWaffoPancakeCNDefaults(cn.values)
+    setWaffoPancakeCNPricing(cn.pricing)
+    setWaffoPancakeCNSelection(cn.binding)
+    setWaffoPancakeCNSavedBinding(cn.binding)
+    setWaffoPancakeUSValues(us.values)
+    setWaffoPancakeUSDefaults(us.values)
+    setWaffoPancakeUSPricing(us.pricing)
+    setWaffoPancakeUSSelection(us.binding)
+    setWaffoPancakeUSSavedBinding(us.binding)
+  }, [rawOptions, persistedOptions])
+
   React.useEffect(() => {
     setWaffoPayMethods(parseWaffoPayMethods(waffoDefaultValues.WaffoPayMethods))
   }, [waffoDefaultValues.WaffoPayMethods])
@@ -394,11 +515,10 @@ export function PaymentSettingsSection({
     [setPaymentValue]
   )
 
+  // The section derives its option keys from `fieldPrefix`, so this takes a
+  // plain string key rather than keyof WaffoPancakeSettingsValues.
   const setWaffoPancakeValue = React.useCallback(
-    <K extends keyof WaffoPancakeSettingsValues>(
-      key: K,
-      value: WaffoPancakeSettingsValues[K]
-    ) => {
+    (key: string, value: string) => {
       setPaymentValue(
         key as keyof PaymentFormValues,
         value as PaymentFormValues[keyof PaymentFormValues]
@@ -775,6 +895,94 @@ export function PaymentSettingsSection({
     }
   }
 
+  // Saves one split channel through the shared Pancake save endpoint. The
+  // backend scopes credentials/product/pricing by `channel`, so the other
+  // channel is never touched.
+  const saveWaffoPancakeChannel = React.useCallback(
+    async (
+      channel: 'cn' | 'us',
+      prefix: string,
+      values: Record<string, string>,
+      selection: WaffoPancakeBinding,
+      pricing: WaffoPancakePricing,
+      onSaved: (binding: WaffoPancakeBinding) => void
+    ) => {
+      const merchantID = (values[`${prefix}MerchantID`] ?? '').trim()
+      const privateKey = (values[`${prefix}PrivateKey`] ?? '').trim()
+      const returnURL = removeTrailingSlash(
+        (values[`${prefix}ReturnURL`] ?? '').trim()
+      )
+      if (!merchantID) {
+        toast.error(t('Merchant ID is required'))
+        return
+      }
+      if (!selection.storeID || !selection.productID) {
+        toast.error(
+          t('Pick or create both a store and a product before saving.')
+        )
+        return
+      }
+      setWaffoSavingChannel(channel)
+      try {
+        const body = await saveWaffoPancakeConfig({
+          channel,
+          merchantID,
+          privateKey,
+          returnURL,
+          storeID: selection.storeID,
+          productID: selection.productID,
+          unitPrice: pricing.unitPrice,
+          ratio: pricing.ratio,
+          minTopUp: pricing.minTopUp,
+        })
+        if (
+          body?.message === 'success' &&
+          typeof body.data === 'object' &&
+          body.data
+        ) {
+          const saved = body.data as { product_id: string; store_id: string }
+          onSaved({
+            storeID: saved.store_id || selection.storeID,
+            productID: saved.product_id || selection.productID,
+          })
+          await queryClient.invalidateQueries({ queryKey: ['system-options'] })
+          toast.success(t('Waffo Pancake settings saved'))
+          return
+        }
+        const reason = typeof body?.data === 'string' ? body.data : undefined
+        toast.error(
+          reason
+            ? `${t('Waffo Pancake save failed')}: ${reason}`
+            : t('Waffo Pancake save failed')
+        )
+      } catch (error) {
+        toast.error(
+          `${t('Waffo Pancake save failed')}: ${
+            error instanceof Error ? error.message : String(error)
+          }`
+        )
+      } finally {
+        setWaffoSavingChannel(null)
+      }
+    },
+    [queryClient, t]
+  )
+
+  const applyWaffoPancakePricing = React.useCallback(
+    (
+      field: WaffoPancakePricingField,
+      value: number,
+      setter: React.Dispatch<React.SetStateAction<WaffoPancakePricing>>
+    ) => {
+      setter((previous) => {
+        const next: WaffoPancakePricing = { ...previous }
+        next[field] = value
+        return next
+      })
+    },
+    []
+  )
+
   const currentFormValues = form.watch()
   const waffoValues: WaffoSettingsValues = {
     WaffoEnabled: currentFormValues.WaffoEnabled,
@@ -880,7 +1088,7 @@ export function PaymentSettingsSection({
           />
           <Tabs defaultValue='general' className='min-w-0'>
             <div className='overflow-x-auto pb-1'>
-              <TabsList className='grid min-w-[44rem] grid-cols-6'>
+              <TabsList className='grid min-w-[56rem] grid-cols-8'>
                 <TabsTrigger value='general'>{t('General')}</TabsTrigger>
                 <TabsTrigger value='epay'>Epay</TabsTrigger>
                 <TabsTrigger value='stripe'>{t('Stripe')}</TabsTrigger>
@@ -1611,14 +1819,126 @@ export function PaymentSettingsSection({
               value='waffo-pancake-cn'
               className={paymentTabContentClassName}
             >
-              <WaffoPancakeChannelSettingsSection channel='cn' />
+              <div className='space-y-4'>
+                <div className='text-muted-foreground text-sm'>
+                  {t(
+                    'CNY channel, paid via WeChat Pay only. Independent credentials, product and pricing — leave the store/product unbound to keep it disabled.'
+                  )}
+                </div>
+                <WaffoPancakeSettingsSection
+                  fieldPrefix='WaffoPancakeCN'
+                  defaultValues={waffoPancakeCNDefaults}
+                  values={waffoPancakeCNValues}
+                  onValueChange={(key, value) =>
+                    setWaffoPancakeCNValues((previous) => ({
+                      ...previous,
+                      [key]: value,
+                    }))
+                  }
+                  selectedBinding={waffoPancakeCNSelection}
+                  savedBinding={waffoPancakeCNSavedBinding}
+                  onSelectedBindingChange={setWaffoPancakeCNSelection}
+                  pricing={waffoPancakeCNPricing}
+                  onPricingChange={(field, value) =>
+                    applyWaffoPancakePricing(
+                      field,
+                      value,
+                      setWaffoPancakeCNPricing
+                    )
+                  }
+                />
+                <div className='flex flex-wrap items-center gap-3'>
+                  <Button
+                    type='button'
+                    onClick={() =>
+                      void saveWaffoPancakeChannel(
+                        'cn',
+                        'WaffoPancakeCN',
+                        waffoPancakeCNValues,
+                        waffoPancakeCNSelection,
+                        waffoPancakeCNPricing,
+                        (binding) => {
+                          setWaffoPancakeCNSavedBinding(binding)
+                          setWaffoPancakeCNSelection(binding)
+                        }
+                      )
+                    }
+                    disabled={waffoSavingChannel === 'cn'}
+                  >
+                    {waffoSavingChannel === 'cn'
+                      ? t('Saving...')
+                      : t('Save channel settings')}
+                  </Button>
+                  <span className='text-muted-foreground text-xs'>
+                    {waffoPancakeCNSavedBinding.productID
+                      ? t('Configured — shows in the wallet top-up page')
+                      : t('Not configured — channel hidden from users')}
+                  </span>
+                </div>
+              </div>
             </TabsContent>
 
             <TabsContent
               value='waffo-pancake-us'
               className={paymentTabContentClassName}
             >
-              <WaffoPancakeChannelSettingsSection channel='us' />
+              <div className='space-y-4'>
+                <div className='text-muted-foreground text-sm'>
+                  {t(
+                    'USD channel, paid by card / Apple Pay / Google Pay. Independent credentials, product and pricing — leave the store/product unbound to keep it disabled.'
+                  )}
+                </div>
+                <WaffoPancakeSettingsSection
+                  fieldPrefix='WaffoPancakeUS'
+                  defaultValues={waffoPancakeUSDefaults}
+                  values={waffoPancakeUSValues}
+                  onValueChange={(key, value) =>
+                    setWaffoPancakeUSValues((previous) => ({
+                      ...previous,
+                      [key]: value,
+                    }))
+                  }
+                  selectedBinding={waffoPancakeUSSelection}
+                  savedBinding={waffoPancakeUSSavedBinding}
+                  onSelectedBindingChange={setWaffoPancakeUSSelection}
+                  pricing={waffoPancakeUSPricing}
+                  onPricingChange={(field, value) =>
+                    applyWaffoPancakePricing(
+                      field,
+                      value,
+                      setWaffoPancakeUSPricing
+                    )
+                  }
+                />
+                <div className='flex flex-wrap items-center gap-3'>
+                  <Button
+                    type='button'
+                    onClick={() =>
+                      void saveWaffoPancakeChannel(
+                        'us',
+                        'WaffoPancakeUS',
+                        waffoPancakeUSValues,
+                        waffoPancakeUSSelection,
+                        waffoPancakeUSPricing,
+                        (binding) => {
+                          setWaffoPancakeUSSavedBinding(binding)
+                          setWaffoPancakeUSSelection(binding)
+                        }
+                      )
+                    }
+                    disabled={waffoSavingChannel === 'us'}
+                  >
+                    {waffoSavingChannel === 'us'
+                      ? t('Saving...')
+                      : t('Save channel settings')}
+                  </Button>
+                  <span className='text-muted-foreground text-xs'>
+                    {waffoPancakeUSSavedBinding.productID
+                      ? t('Configured — shows in the wallet top-up page')
+                      : t('Not configured — channel hidden from users')}
+                  </span>
+                </div>
+              </div>
             </TabsContent>
 
             <TabsContent value='waffo' className={paymentTabContentClassName}>

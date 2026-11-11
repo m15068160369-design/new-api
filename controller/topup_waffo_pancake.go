@@ -109,15 +109,27 @@ type saveWaffoPancakeRequest struct {
 	ReturnURL  string `json:"return_url"`
 	StoreID    string `json:"store_id"`
 	ProductID  string `json:"product_id"`
+	// Channel routes the save to a config group: "" (default) writes the
+	// legacy WaffoPancake* keys, "cn"/"us" write the dual-channel
+	// WaffoPancakeCN*/US* groups (and also persist the pricing fields
+	// below, which the legacy save ignores).
+	Channel   string  `json:"channel"`
+	UnitPrice float64 `json:"unit_price"`
+	Ratio     float64 `json:"ratio"`
+	MinTopUp  int     `json:"min_top_up"`
 }
 
 type createWaffoPancakePairRequest struct {
 	MerchantID string `json:"merchant_id"`
 	PrivateKey string `json:"private_key"`
 	ReturnURL  string `json:"return_url"`
+	// Channel picks the credential fallback (when body creds are blank)
+	// and the seeded price currency for the created product: cn = CNY,
+	// anything else = USD.
+	Channel string `json:"channel"`
 }
 
-// SaveWaffoPancake atomically persists all five operator-controlled fields.
+// SaveWaffoPancake atomically persists the operator-controlled fields.
 // Catalog / pair endpoints are transient — only this one writes the OptionMap.
 func SaveWaffoPancake(c *gin.Context) {
 	var req saveWaffoPancakeRequest
@@ -125,26 +137,38 @@ func SaveWaffoPancake(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "参数错误"})
 		return
 	}
+	channel := strings.TrimSpace(strings.ToLower(req.Channel))
 	if err := service.SaveWaffoPancakeConfig(
 		c.Request.Context(),
+		channel,
 		req.MerchantID,
 		req.PrivateKey,
 		req.ReturnURL,
 		req.StoreID,
 		req.ProductID,
+		req.UnitPrice,
+		req.Ratio,
+		req.MinTopUp,
 	); err != nil {
 		logger.LogError(c.Request.Context(), fmt.Sprintf(
-			"Waffo Pancake 保存配置失败 store_id=%q product_id=%q error=%q",
-			req.StoreID, req.ProductID, err.Error(),
+			"Waffo Pancake 保存配置失败 channel=%q store_id=%q product_id=%q error=%q",
+			channel, req.StoreID, req.ProductID, err.Error(),
 		))
 		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "保存配置失败"})
 		return
 	}
+	productID, storeID := setting.WaffoPancakeProductID, setting.WaffoPancakeStoreID
+	switch channel {
+	case "cn":
+		productID, storeID = setting.WaffoPancakeCNProductID, setting.WaffoPancakeCNStoreID
+	case "us":
+		productID, storeID = setting.WaffoPancakeUSProductID, setting.WaffoPancakeUSStoreID
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"message": "success",
 		"data": gin.H{
-			"product_id": setting.WaffoPancakeProductID,
-			"store_id":   setting.WaffoPancakeStoreID,
+			"product_id": productID,
+			"store_id":   storeID,
 		},
 	})
 }
@@ -152,12 +176,20 @@ func SaveWaffoPancake(c *gin.Context) {
 // resolveWaffoPancakeAdminCreds prefers body creds (typed-but-not-yet-saved
 // values, for verification) and falls back to persisted creds when the body
 // is blank (so returning admins don't have to re-paste the private key,
-// which is stripped from GET /api/option/).
-func resolveWaffoPancakeAdminCreds(bodyMerchantID, bodyPrivateKey string) (string, string) {
+// which is stripped from GET /api/option/). The channel selector picks which
+// persisted credential group the fallback reads from.
+func resolveWaffoPancakeAdminCreds(channel, bodyMerchantID, bodyPrivateKey string) (string, string) {
 	m := strings.TrimSpace(bodyMerchantID)
 	k := strings.TrimSpace(bodyPrivateKey)
 	if m == "" && k == "" {
-		return setting.WaffoPancakeMerchantID, setting.WaffoPancakePrivateKey
+		switch strings.TrimSpace(strings.ToLower(channel)) {
+		case "cn":
+			return setting.WaffoPancakeCNMerchantID, setting.WaffoPancakeCNPrivateKey
+		case "us":
+			return setting.WaffoPancakeUSMerchantID, setting.WaffoPancakeUSPrivateKey
+		default:
+			return setting.WaffoPancakeMerchantID, setting.WaffoPancakePrivateKey
+		}
 	}
 	return m, k
 }
@@ -173,13 +205,17 @@ func CreateWaffoPancakePair(c *gin.Context) {
 			return
 		}
 	}
-	merchantID, privateKey := resolveWaffoPancakeAdminCreds(req.MerchantID, req.PrivateKey)
+	merchantID, privateKey := resolveWaffoPancakeAdminCreds(req.Channel, req.MerchantID, req.PrivateKey)
 	if merchantID == "" || privateKey == "" {
 		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "Waffo Pancake 凭证未配置"})
 		return
 	}
+	currency := "USD"
+	if strings.TrimSpace(strings.ToLower(req.Channel)) == "cn" {
+		currency = "CNY"
+	}
 	result, err := service.CreateWaffoPancakePrimaryPair(
-		c.Request.Context(), merchantID, privateKey, req.ReturnURL,
+		c.Request.Context(), merchantID, privateKey, req.ReturnURL, currency,
 	)
 	if err != nil {
 		orphan := result != nil && result.OrphanStore
@@ -216,8 +252,10 @@ func CreateWaffoPancakePair(c *gin.Context) {
 // Doubles as a credential probe (a successful 200 proves the resolved creds
 // authenticate). See resolveWaffoPancakeAdminCreds for credential resolution.
 func ListWaffoPancakeCatalog(c *gin.Context) {
-	// Missing query creds mean "use persisted creds".
+	// Missing query creds mean "use persisted creds" (channel picks the
+	// credential group for the fallback).
 	merchantID, privateKey := resolveWaffoPancakeAdminCreds(
+		strings.TrimSpace(c.Query("channel")),
 		strings.TrimSpace(c.Query("merchant_id")),
 		strings.TrimSpace(c.Query("private_key")),
 	)
@@ -262,7 +300,7 @@ func CreateWaffoPancakeSubscriptionProduct(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "套餐价格不能为空"})
 		return
 	}
-	merchantID, privateKey := resolveWaffoPancakeAdminCreds("", "")
+	merchantID, privateKey := resolveWaffoPancakeAdminCreds("", "", "")
 	storeID := strings.TrimSpace(setting.WaffoPancakeStoreID)
 	if merchantID == "" || privateKey == "" || storeID == "" {
 		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "Waffo Pancake 未完成配置，请先在支付设置中完成网关绑定"})
@@ -299,7 +337,7 @@ func CreateWaffoPancakeSubscriptionProduct(c *gin.Context) {
 // in the saved Pancake store, for the subscription-plan dropdown. The name
 // reflects new-api's plan concept; under the hood it's still OnetimeProducts.
 func ListWaffoPancakeSubscriptionProductOptions(c *gin.Context) {
-	merchantID, privateKey := resolveWaffoPancakeAdminCreds("", "")
+	merchantID, privateKey := resolveWaffoPancakeAdminCreds("", "", "")
 	storeID := strings.TrimSpace(setting.WaffoPancakeStoreID)
 	if merchantID == "" || privateKey == "" || storeID == "" {
 		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "Waffo Pancake 未完成配置，请先在支付设置中完成网关绑定"})

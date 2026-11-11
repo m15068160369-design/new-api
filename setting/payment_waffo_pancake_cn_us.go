@@ -12,15 +12,19 @@ package setting
 var (
 	WaffoPancakeCNMerchantID string
 	WaffoPancakeCNPrivateKey string
-	WaffoPancakeCNProductID   string
-	WaffoPancakeCNUnitPrice   float64 = 1.0
-	WaffoPancakeCNRatio       float64 = 1.0
-	WaffoPancakeCNMinTopUp    int     = 1
+	WaffoPancakeCNStoreID    string
+	WaffoPancakeCNProductID  string
+	WaffoPancakeCNReturnURL  string
+	WaffoPancakeCNUnitPrice  float64 = 1.0
+	WaffoPancakeCNRatio      float64 = 1.0
+	WaffoPancakeCNMinTopUp   int     = 1
 
 	WaffoPancakeUSMerchantID string
 	WaffoPancakeUSPrivateKey string
-	WaffoPancakeUSProductID   string
-	WaffoPancakeUSUnitPrice   float64 = 1.0
-	WaffoPancakeUSRatio       float64 = 1.0
-	WaffoPancakeUSMinTopUp    int     = 1
+	WaffoPancakeUSStoreID    string
+	WaffoPancakeUSProductID  string
+	WaffoPancakeUSReturnURL  string
+	WaffoPancakeUSUnitPrice  float64 = 1.0
+	WaffoPancakeUSRatio      float64 = 1.0
+	WaffoPancakeUSMinTopUp   int     = 1
 )

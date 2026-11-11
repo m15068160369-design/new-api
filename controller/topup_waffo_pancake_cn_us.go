@@ -10,7 +10,6 @@ package controller
 import (
 	"fmt"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -227,51 +226,3 @@ func RequestWaffoPancakeCNAmount(c *gin.Context) { handleWaffoPancakeChannelAmou
 func RequestWaffoPancakeCNPay(c *gin.Context)    { handleWaffoPancakeChannelPay(c, waffoPancakeCNChannel) }
 func RequestWaffoPancakeUSAmount(c *gin.Context) { handleWaffoPancakeChannelAmount(c, waffoPancakeUSChannel) }
 func RequestWaffoPancakeUSPay(c *gin.Context)    { handleWaffoPancakeChannelPay(c, waffoPancakeUSChannel) }
-
-// ---------------------------------------------------------------------------
-// Admin: per-channel configuration save.
-// ---------------------------------------------------------------------------
-
-type saveWaffoPancakeChannelRequest struct {
-	Channel    string  `json:"channel"` // "cn" | "us"
-	MerchantID string  `json:"merchant_id"`
-	PrivateKey string  `json:"private_key"`
-	ProductID  string  `json:"product_id"`
-	UnitPrice  float64 `json:"unit_price"`
-	Ratio      float64 `json:"ratio"`
-	MinTopUp   int     `json:"min_top_up"`
-}
-
-func SaveWaffoPancakeChannel(c *gin.Context) {
-	var req saveWaffoPancakeChannelRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "参数错误"})
-		return
-	}
-	channel := strings.TrimSpace(strings.ToLower(req.Channel))
-	if channel != "cn" && channel != "us" {
-		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "channel 必须是 cn 或 us"})
-		return
-	}
-	if err := service.SaveWaffoPancakeChannelConfig(
-		c.Request.Context(),
-		channel,
-		req.MerchantID,
-		req.PrivateKey,
-		req.ProductID,
-		req.UnitPrice,
-		req.Ratio,
-		req.MinTopUp,
-	); err != nil {
-		logger.LogError(c.Request.Context(), fmt.Sprintf("Waffo Pancake %s 保存渠道配置失败 error=%q", channel, err.Error()))
-		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "保存配置失败"})
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{
-		"message": "success",
-		"data": gin.H{
-			"channel":  channel,
-			"enabled":  channel == "cn" && isWaffoPancakeCNTopUpEnabled() || channel == "us" && isWaffoPancakeUSTopUpEnabled(),
-		},
-	})
-}
