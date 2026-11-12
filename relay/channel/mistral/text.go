@@ -1,8 +1,6 @@
 package mistral
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"regexp"
 
 	"github.com/QuantumNous/new-api/common"
@@ -156,10 +154,12 @@ func requestOpenAI2Mistral(request *dto.GeneralOpenAIRequest) (*dto.GeneralOpenA
 	return out, affinityKey
 }
 
-// [patch lou #16] 从对话根派生稳定的缓存亲和 key：取首条 user 消息
-// （会话演进中最稳定的不变点）内容做 SHA-256。同一会话的后续轮命中同一 key、
+// [patch lou #16b] 从对话根派生稳定的缓存亲和 key：取首条 user 消息
+// 的前 64 个字符（rune）明文。会话演进中首条 user 不变，故每轮 key 相同、
 // 同一缓存节点（Mistral 官方机制：prompt_cache_key 提高缓存命中路由概率）。
-// 压缩重放后首条 user 改变时 key 随之改变，视作新会话预热，可接受。
+// 楼先生拍板由 SHA-256 指纹改为明文前缀：效果等价，中转站场景零开销优先。
+// 按字符截断避免中文拦腰断字节；短首消息（<64 字符）区分度略降，
+// 撞 key 只影响路由不影响正确性。
 func deriveConversationAffinityKey(messages []dto.Message) string {
 	root := ""
 	for _, m := range messages {
@@ -171,6 +171,9 @@ func deriveConversationAffinityKey(messages []dto.Message) string {
 	if root == "" {
 		return ""
 	}
-	sum := sha256.Sum256([]byte(root))
-	return hex.EncodeToString(sum[:16])
+	runes := []rune(root)
+	if len(runes) > 64 {
+		runes = runes[:64]
+	}
+	return string(runes)
 }

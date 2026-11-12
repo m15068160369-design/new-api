@@ -461,6 +461,55 @@ func TestRequestOpenAI2Mistral_PromptCacheKeyAndAffinity(t *testing.T) {
 	}
 }
 
+func TestDeriveConversationAffinityKey_PlaintextPrefix64(t *testing.T) {
+	// [patch lou #16b] 明文前缀派生：长首消息截 64 字符（rune，不切半汉字）
+	long := strings.Repeat("汉", 100)
+	req := &dto.GeneralOpenAIRequest{
+		Model:    "glm-5.3",
+		Messages: []dto.Message{{Role: "user", Content: long}, {Role: "user", Content: "second"}},
+	}
+	_, aff := requestOpenAI2Mistral(req)
+	want := strings.Repeat("汉", 64)
+	if aff != want {
+		t.Errorf("long first user must truncate to 64 runes, got len=%d", len([]rune(aff)))
+	}
+	// 同前缀不同尾巴：截断后同 key（64 字符边界内视为同根）
+	req2 := &dto.GeneralOpenAIRequest{
+		Model: "glm-5.3",
+		Messages: []dto.Message{
+			{Role: "user", Content: long},
+			{Role: "assistant", Content: "ok"},
+			{Role: "user", Content: "追加轮"},
+		},
+	}
+	out2, aff2 := requestOpenAI2Mistral(req2)
+	if aff2 != aff {
+		t.Errorf("same session turn-2 must keep same key: %q vs %q", aff, aff2)
+	}
+	if out2.PromptCacheKey != aff2 {
+		t.Errorf("out.PromptCacheKey must mirror affinity key")
+	}
+	// 短消息：全文即 key，无截断
+	short := "你好"
+	req3 := &dto.GeneralOpenAIRequest{
+		Model:    "glm-5.3",
+		Messages: []dto.Message{{Role: "user", Content: short}},
+	}
+	_, aff3 := requestOpenAI2Mistral(req3)
+	if aff3 != "你好" {
+		t.Errorf("short message must map verbatim, got %q", aff3)
+	}
+	// 多条 user：只取第一条（对话根）
+	req4 := &dto.GeneralOpenAIRequest{
+		Model:    "glm-5.3",
+		Messages: []dto.Message{{Role: "user", Content: "第一条"}, {Role: "user", Content: "第二条"}},
+	}
+	_, aff4 := requestOpenAI2Mistral(req4)
+	if aff4 != "第一条" {
+		t.Errorf("first user message only, got %q", aff4)
+	}
+}
+
 func TestSetupRequestHeader_XAffinityMirror(t *testing.T) {
 	// Convert 存 key，mirrorAffinityHeader 镜像 x-affinity；无 key 不加头
 	gin.SetMode(gin.TestMode)
