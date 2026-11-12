@@ -7,10 +7,14 @@ package mistral
 import (
 	"encoding/json"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/QuantumNous/new-api/dto"
+
+	"github.com/gin-gonic/gin"
 )
 
 func normalizeLine(t *testing.T, line string, roleSeen *bool) map[string]interface{} {
@@ -306,7 +310,7 @@ func TestRequestOpenAI2Mistral_ReasoningToChunklet(t *testing.T) {
 			{Role: "user", Content: "追问"},
 		},
 	}
-	out := requestOpenAI2Mistral(req)
+	out, _ := requestOpenAI2Mistral(req)
 	arr, ok := out.Messages[1].Content.([]any)
 	if !ok || len(arr) != 2 {
 		t.Fatalf("assistant content should become 2-block chunklet, got %#v", out.Messages[1].Content)
@@ -330,7 +334,7 @@ func TestRequestOpenAI2Mistral_ReasoningToChunklet(t *testing.T) {
 		Model:    "glm-5.3",
 		Messages: []dto.Message{{Role: "assistant", Content: "纯文本"}},
 	}
-	out2 := requestOpenAI2Mistral(req2)
+	out2, _ := requestOpenAI2Mistral(req2)
 	if _, isChunklet := out2.Messages[0].Content.([]any); isChunklet {
 		t.Logf("no-chunklet path content=%T (media array ok)", out2.Messages[0].Content)
 	}
@@ -342,7 +346,8 @@ func TestRequestOpenAI2Mistral_ToolChoice(t *testing.T) {
 		ToolChoice: "required",
 		Messages:   []dto.Message{{Role: "user", Content: "hi"}},
 	}
-	if tc, _ := requestOpenAI2Mistral(req).ToolChoice.(string); tc != "any" {
+	outTC, _ := requestOpenAI2Mistral(req)
+	if tc, _ := outTC.ToolChoice.(string); tc != "any" {
 		t.Errorf("required→any, got %v", tc)
 	}
 	req2 := &dto.GeneralOpenAIRequest{
@@ -350,8 +355,128 @@ func TestRequestOpenAI2Mistral_ToolChoice(t *testing.T) {
 		ToolChoice: map[string]any{"type": "function", "function": map[string]any{"name": "f"}},
 		Messages:   []dto.Message{{Role: "user", Content: "hi"}},
 	}
-	if s, _ := requestOpenAI2Mistral(req2).ToolChoice.(string); s == "any" {
+	outT2, _ := requestOpenAI2Mistral(req2)
+	if s, _ := outT2.ToolChoice.(string); s == "any" {
 		t.Errorf("object tool_choice must passthrough")
+	}
+}
+
+func TestRequestOpenAI2Mistral_DeveloperRole(t *testing.T) {
+	// [patch lou #16] Mistral 只认 system/user/assistant/tool：developer → system
+	req := &dto.GeneralOpenAIRequest{
+		Model: "glm-5.3",
+		Messages: []dto.Message{
+			{Role: "developer", Content: "你是编码助手"},
+			{Role: "user", Content: "hi"},
+		},
+	}
+	out, _ := requestOpenAI2Mistral(req)
+	if out.Messages[0].Role != "system" {
+		t.Errorf("developer must map to system, got %q", out.Messages[0].Role)
+	}
+	// 其他 role 不动
+	req2 := &dto.GeneralOpenAIRequest{
+		Model:    "glm-5.3",
+		Messages: []dto.Message{{Role: "tool", Content: "result"}, {Role: "assistant", Content: "ok"}},
+	}
+	out2, _ := requestOpenAI2Mistral(req2)
+	if out2.Messages[0].Role != "tool" || out2.Messages[1].Role != "assistant" {
+		t.Errorf("other roles must passthrough, got %q/%q", out2.Messages[0].Role, out2.Messages[1].Role)
+	}
+}
+
+func TestRequestOpenAI2Mistral_ReasoningEffortPassthrough(t *testing.T) {
+	req := &dto.GeneralOpenAIRequest{
+		Model:           "glm-5.3",
+		ReasoningEffort: "max",
+		Messages:        []dto.Message{{Role: "user", Content: "hi"}},
+	}
+	out, _ := requestOpenAI2Mistral(req)
+	if out.ReasoningEffort != "max" {
+		t.Errorf("reasoning_effort must passthrough, got %q", out.ReasoningEffort)
+	}
+	req2 := &dto.GeneralOpenAIRequest{
+		Model:    "glm-5.3",
+		Messages: []dto.Message{{Role: "user", Content: "hi"}},
+	}
+	out2, _ := requestOpenAI2Mistral(req2)
+	if out2.ReasoningEffort != "" {
+		t.Errorf("empty effort must stay empty (omitempty drop), got %q", out2.ReasoningEffort)
+	}
+}
+
+func TestRequestOpenAI2Mistral_PromptCacheKeyAndAffinity(t *testing.T) {
+	// 客户端给了 prompt_cache_key：原样透传并作为 affinity key 返回
+	req := &dto.GeneralOpenAIRequest{
+		Model:          "glm-5.3",
+		PromptCacheKey: "client-key-123",
+		Messages:       []dto.Message{{Role: "user", Content: "hi"}},
+	}
+	out, aff := requestOpenAI2Mistral(req)
+	if out.PromptCacheKey != "client-key-123" || aff != "client-key-123" {
+		t.Errorf("client cache key must passthrough verbatim, got %q/%q", out.PromptCacheKey, aff)
+	}
+
+	// 没给 key：从首条 user 派生稳定 key；同会话第二轮（历史追加）派生值不变
+	req2 := &dto.GeneralOpenAIRequest{
+		Model:    "glm-5.3",
+		Messages: []dto.Message{{Role: "user", Content: "帮我写排序"}, {Role: "assistant", Content: "ok"}},
+	}
+	out2, aff2 := requestOpenAI2Mistral(req2)
+	req3 := &dto.GeneralOpenAIRequest{
+		Model: "glm-5.3",
+		Messages: []dto.Message{
+			{Role: "user", Content: "帮我写排序"},
+			{Role: "assistant", Content: "ok"},
+			{Role: "user", Content: "改成快排"},
+		},
+	}
+	out3, aff3 := requestOpenAI2Mistral(req3)
+	if aff2 == "" {
+		t.Fatalf("derived key must not be empty")
+	}
+	if aff2 != aff3 {
+		t.Errorf("same conversation turn-2 must keep same key: %q vs %q", aff2, aff3)
+	}
+	if out2.PromptCacheKey != aff2 || out3.PromptCacheKey != aff3 {
+		t.Errorf("out.PromptCacheKey must mirror affinity key")
+	}
+	// 不同对话派生不同 key
+	req4 := &dto.GeneralOpenAIRequest{
+		Model:    "glm-5.3",
+		Messages: []dto.Message{{Role: "user", Content: "完全不同的问题"}},
+	}
+	_, aff4 := requestOpenAI2Mistral(req4)
+	if aff4 == aff2 {
+		t.Errorf("different conversation root must derive different key")
+	}
+	// 没有 user 消息（纯 instructions）：key 为空，不注 x-affinity 也不加 body 字段
+	req5 := &dto.GeneralOpenAIRequest{
+		Model:    "glm-5.3",
+		Messages: []dto.Message{{Role: "system", Content: "sys"}},
+	}
+	out5, aff5 := requestOpenAI2Mistral(req5)
+	if aff5 != "" || out5.PromptCacheKey != "" {
+		t.Errorf("no user message → empty key, got %q", aff5)
+	}
+}
+
+func TestSetupRequestHeader_XAffinityMirror(t *testing.T) {
+	// Convert 存 key，mirrorAffinityHeader 镜像 x-affinity；无 key 不加头
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Set(mistralAffinityCtxKey, "aff-abc")
+	h := http.Header{}
+	mirrorAffinityHeader(c, &h)
+	if h.Get("x-affinity") != "aff-abc" {
+		t.Errorf("x-affinity must mirror ctx key, got %q", h.Get("x-affinity"))
+	}
+
+	c2, _ := gin.CreateTestContext(httptest.NewRecorder())
+	h2 := http.Header{}
+	mirrorAffinityHeader(c2, &h2)
+	if h2.Get("x-affinity") != "" {
+		t.Errorf("no key → no x-affinity header")
 	}
 }
 

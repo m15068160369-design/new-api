@@ -1,6 +1,8 @@
 package mistral
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"regexp"
 
 	"github.com/QuantumNous/new-api/common"
@@ -34,7 +36,9 @@ func convertMistralToolChoice(tc any) any {
 	return tc
 }
 
-func requestOpenAI2Mistral(request *dto.GeneralOpenAIRequest) *dto.GeneralOpenAIRequest {
+func requestOpenAI2Mistral(request *dto.GeneralOpenAIRequest) (*dto.GeneralOpenAIRequest, string) {
+	// [patch lou #16] 返回第二值：本请求的缓存亲和 key（prompt_cache_key / 派生值），
+	// 供 SetupRequestHeader 镜像进 x-affinity。
 	messages := make([]dto.Message, 0, len(request.Messages))
 	idMap := make(map[string]string)
 	for _, message := range request.Messages {
@@ -97,8 +101,15 @@ func requestOpenAI2Mistral(request *dto.GeneralOpenAIRequest) *dto.GeneralOpenAI
 			}
 		}
 		message.SetMediaContent(mediaMessages)
+		// [patch lou #16] Mistral 只认 system/user/assistant/tool 四种 role（实测 422
+		// `Input tag 'developer' ... does not match any of the expected tags`，
+		// linux.do/t/topic/3149127 坑1）。Codex/CPA 客户端会发 developer，统一降为 system。
+		role := message.Role
+		if role == "developer" {
+			role = "system"
+		}
 		newMsg := dto.Message{
-			Role:       message.Role,
+			Role:       role,
 			Content:    message.Content,
 			ToolCalls:  message.ToolCalls,
 			ToolCallId: message.ToolCallId,
@@ -125,5 +136,41 @@ func requestOpenAI2Mistral(request *dto.GeneralOpenAIRequest) *dto.GeneralOpenAI
 		maxTokens := request.GetMaxTokens()
 		out.MaxTokens = &maxTokens
 	}
-	return out
+	// [patch lou #16] reasoning_effort 透传：此前白名单静默丢弃，楼补丁 #13 在网关层
+	// 纠正过的合法值（zai-glm-5-3 认 max/high/low）根本到不了上游。现在保持客户端/网关
+	// 注入值原样上行。注意：未来渠道若加 mistral 自家非思考模型（如 mistral-large 会报
+	// reasoning_effort is not enabled），需按模型评估是否透传。
+	if request.ReasoningEffort != "" {
+		out.ReasoningEffort = request.ReasoningEffort
+	}
+	// [patch lou #16] 缓存亲和 key：客户端给了 prompt_cache_key（CPA 的
+	// support-prompt-cache-key 开关即发此字段）则原样透传；否则从对话根
+	// （首条 system/developer 指令 + 首条 user 消息）派生稳定 key，让同一会话的
+	// 后续轮次与压缩重放命中同一缓存节点。key 同时镜像进 x-affinity header
+	// （vibe 端点习惯，kaecho/mistral 实践）。
+	affinityKey := request.PromptCacheKey
+	if affinityKey == "" {
+		affinityKey = deriveConversationAffinityKey(request.Messages)
+	}
+	out.PromptCacheKey = affinityKey
+	return out, affinityKey
+}
+
+// [patch lou #16] 从对话根派生稳定的缓存亲和 key：取首条 user 消息
+// （会话演进中最稳定的不变点）内容做 SHA-256。同一会话的后续轮命中同一 key、
+// 同一缓存节点（Mistral 官方机制：prompt_cache_key 提高缓存命中路由概率）。
+// 压缩重放后首条 user 改变时 key 随之改变，视作新会话预热，可接受。
+func deriveConversationAffinityKey(messages []dto.Message) string {
+	root := ""
+	for _, m := range messages {
+		if m.Role == "user" {
+			root = m.StringContent()
+			break
+		}
+	}
+	if root == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(root))
+	return hex.EncodeToString(sum[:16])
 }

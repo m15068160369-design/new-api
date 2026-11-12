@@ -19,6 +19,10 @@ import (
 type Adaptor struct {
 }
 
+// [patch lou #16] gin context key：ConvertOpenAIRequest 存缓存亲和 key，
+// SetupRequestHeader 取出镜像进 x-affinity header。前缀带包名避免冲突。
+const mistralAffinityCtxKey = "mistral_affinity_key"
+
 func (a *Adaptor) ConvertGeminiRequest(*gin.Context, *relaycommon.RelayInfo, *dto.GeminiChatRequest) (any, error) {
 	//TODO implement me
 	return nil, errors.New("not implemented")
@@ -50,14 +54,30 @@ func (a *Adaptor) GetRequestURL(info *relaycommon.RelayInfo) (string, error) {
 func (a *Adaptor) SetupRequestHeader(c *gin.Context, req *http.Header, info *relaycommon.RelayInfo) error {
 	channel.SetupApiRequestHeader(info, c, req)
 	req.Set("Authorization", "Bearer "+info.ApiKey)
+	mirrorAffinityHeader(c, req)
 	return nil
+}
+
+// [patch lou #16] 镜像缓存亲和 key 进 x-affinity header（vibe 端点语义；
+// kaecho/mistral 实践：prompt_cache_key 参数 + x-affinity header 双通道，
+// Mistral 负载均衡据此把同会话请求钉在持有前缀缓存的节点）。
+// 独立小函数便于单测（不依赖 gin.Context 的请求级初始化）。
+func mirrorAffinityHeader(c *gin.Context, req *http.Header) {
+	if key := c.GetString(mistralAffinityCtxKey); key != "" {
+		req.Set("x-affinity", key)
+	}
 }
 
 func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayInfo, request *dto.GeneralOpenAIRequest) (any, error) {
 	if request == nil {
 		return nil, errors.New("request is nil")
 	}
-	return requestOpenAI2Mistral(request), nil
+	mistralReq, affinityKey := requestOpenAI2Mistral(request)
+	// [patch lou #16] 缓存亲和 key 存 gin context，SetupRequestHeader 里镜像进 x-affinity
+	if affinityKey != "" {
+		c.Set(mistralAffinityCtxKey, affinityKey)
+	}
+	return mistralReq, nil
 }
 
 func (a *Adaptor) ConvertRerankRequest(c *gin.Context, relayMode int, request dto.RerankRequest) (any, error) {
