@@ -2,6 +2,7 @@ package mistral
 
 import (
 	"bytes"
+	"encoding/base64"
 	"errors"
 	"io"
 	"net/http"
@@ -58,13 +59,14 @@ func (a *Adaptor) SetupRequestHeader(c *gin.Context, req *http.Header, info *rel
 	return nil
 }
 
-// [patch lou #16] 镜像缓存亲和 key 进 x-affinity header（vibe 端点语义；
-// kaecho/mistral 实践：prompt_cache_key 参数 + x-affinity header 双通道，
-// Mistral 负载均衡据此把同会话请求钉在持有前缀缓存的节点）。
+// [patch lou #16c] 镜像缓存亲和 key 进 x-affinity header（kaecho/mistral 双通道实践）。
+// header 值用 base64url 编码：HTTP header 只允许 ASCII，#16b 的中文明文 key
+// 直接进 header 会让上游 HTTP 处理层 500（2026-11-13 生产实测：中文 key 全
+// 500 / 英文 key 200，判别实验实锤；body 的 prompt_cache_key 保持明文不变）。
 // 独立小函数便于单测（不依赖 gin.Context 的请求级初始化）。
 func mirrorAffinityHeader(c *gin.Context, req *http.Header) {
 	if key := c.GetString(mistralAffinityCtxKey); key != "" {
-		req.Set("x-affinity", key)
+		req.Set("x-affinity", base64.RawURLEncoding.EncodeToString([]byte(key)))
 	}
 }
 

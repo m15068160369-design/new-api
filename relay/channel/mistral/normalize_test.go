@@ -511,14 +511,30 @@ func TestDeriveConversationAffinityKey_PlaintextPrefix64(t *testing.T) {
 }
 
 func TestSetupRequestHeader_XAffinityMirror(t *testing.T) {
-	// Convert 存 key，mirrorAffinityHeader 镜像 x-affinity；无 key 不加头
+	// Convert 存 key，mirrorAffinityHeader 镜像 x-affinity（base64url 编码，
+	// ASCII 安全——中文明文 key 直接进 header 会让上游 HTTP 层 500）；无 key 不加头
 	gin.SetMode(gin.TestMode)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Set(mistralAffinityCtxKey, "aff-abc")
 	h := http.Header{}
 	mirrorAffinityHeader(c, &h)
-	if h.Get("x-affinity") != "aff-abc" {
-		t.Errorf("x-affinity must mirror ctx key, got %q", h.Get("x-affinity"))
+	if got := h.Get("x-affinity"); got != "YWZmLWFiYw" {
+		t.Errorf("x-affinity must be base64url of ctx key, got %q", got)
+	}
+
+	// [patch lou #16c] 中文明文 key（#16b 派生值）→ header 值必须是纯 ASCII
+	cn, _ := gin.CreateTestContext(httptest.NewRecorder())
+	cn.Set(mistralAffinityCtxKey, "用一句话解释二分法")
+	h3 := http.Header{}
+	mirrorAffinityHeader(cn, &h3)
+	got3 := h3.Get("x-affinity")
+	if got3 != "55So5LiA5Y-l6K-d6Kej6YeK5LqM5YiG5rOV" {
+		t.Errorf("CJK key must encode to base64url, got %q", got3)
+	}
+	for _, r := range got3 {
+		if r > 127 {
+			t.Fatalf("header value contains non-ASCII rune %q", r)
+		}
 	}
 
 	c2, _ := gin.CreateTestContext(httptest.NewRecorder())
