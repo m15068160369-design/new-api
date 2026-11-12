@@ -1,9 +1,11 @@
 package mistral
 
 import (
+	"bytes"
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
 
 	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/relay/channel"
@@ -77,9 +79,23 @@ func (a *Adaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, request
 }
 
 func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo) (usage any, err *types.NewAPIError) {
+	// [patch lou #15a] Mistral 思考模型返回 chunklet 数组 content，此处归一为标准
+	// OpenAI 形态（thinking→reasoning_content、text→content）后再走通用 handler，
+	// 严格校验的客户端与 processTokenData 计费路径从此看到标准帧。
 	if info.IsStream {
+		resp.Body = NewNormalizeStream(resp.Body)
 		usage, err = openai.OaiStreamHandler(c, info, resp)
 	} else {
+		body, readErr := io.ReadAll(resp.Body)
+		if readErr == nil {
+			normalized := NormalizeChatCompletionBody(body)
+			resp.Body = io.NopCloser(bytes.NewReader(normalized))
+			resp.ContentLength = int64(len(normalized))
+			resp.Header.Set("Content-Length", strconv.Itoa(len(normalized)))
+		} else {
+			// 读失败保守处理：把已读部分原样回灌
+			resp.Body = io.NopCloser(bytes.NewReader(body))
+		}
 		usage, err = openai.OpenaiHandler(c, info, resp)
 	}
 	return
