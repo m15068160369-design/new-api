@@ -13,6 +13,7 @@ import (
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/setting"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"io"
 	"net/http"
 	"time"
@@ -115,7 +116,12 @@ func (*CreemAdaptor) RequestPay(c *gin.Context, req *CreemPayRequest) {
 		CreateTime:      time.Now().Unix(),
 		Status:          common.TopUpStatusPending,
 	}
-	err = topUp.Insert()
+	err = model.CreateTopUpWithLimit(topUp, operation_setting.GetTopUpLimitSetting().EffectiveMaxAbnormalPerDay())
+	if errors.Is(err, model.ErrTopUpAbnormalLimit) {
+		logger.LogWarn(c.Request.Context(), fmt.Sprintf("Creem 充值建单被防滥用限制拒绝 user_id=%d trade_no=%s product_id=%s", id, referenceId, selectedProduct.ProductId))
+		c.JSON(http.StatusOK, gin.H{"message": "error", "data": err.Error()})
+		return
+	}
 	if err != nil {
 		logger.LogError(c.Request.Context(), fmt.Sprintf("Creem 创建充值订单失败 user_id=%d trade_no=%s product_id=%s error=%q", id, referenceId, selectedProduct.ProductId, err.Error()))
 		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "创建订单失败"})

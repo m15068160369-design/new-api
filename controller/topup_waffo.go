@@ -228,7 +228,12 @@ func RequestWaffoPay(c *gin.Context) {
 		CreateTime:      time.Now().Unix(),
 		Status:          common.TopUpStatusPending,
 	}
-	if err := topUp.Insert(); err != nil {
+	if err := model.CreateTopUpWithLimit(topUp, operation_setting.GetTopUpLimitSetting().EffectiveMaxAbnormalPerDay()); err != nil {
+		if errors.Is(err, model.ErrTopUpAbnormalLimit) {
+			logger.LogWarn(c.Request.Context(), fmt.Sprintf("Waffo 充值建单被防滥用限制拒绝 user_id=%d trade_no=%s amount=%d", id, merchantOrderId, req.Amount))
+			c.JSON(http.StatusOK, gin.H{"message": "error", "data": err.Error()})
+			return
+		}
 		logger.LogError(c.Request.Context(), fmt.Sprintf("Waffo 创建充值订单失败 user_id=%d trade_no=%s amount=%d error=%q", id, merchantOrderId, req.Amount, err.Error()))
 		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "创建订单失败"})
 		return

@@ -109,7 +109,12 @@ func (*StripeAdaptor) RequestPay(c *gin.Context, req *StripePayRequest) {
 		CreateTime:      time.Now().Unix(),
 		Status:          common.TopUpStatusPending,
 	}
-	err = topUp.Insert()
+	err = model.CreateTopUpWithLimit(topUp, operation_setting.GetTopUpLimitSetting().EffectiveMaxAbnormalPerDay())
+	if errors.Is(err, model.ErrTopUpAbnormalLimit) {
+		logger.LogWarn(c.Request.Context(), fmt.Sprintf("Stripe 充值建单被防滥用限制拒绝 user_id=%d trade_no=%s amount=%d", id, referenceId, req.Amount))
+		c.JSON(http.StatusOK, gin.H{"message": "error", "data": err.Error()})
+		return
+	}
 	if err != nil {
 		logger.LogError(c.Request.Context(), fmt.Sprintf("Stripe 创建充值订单失败 user_id=%d trade_no=%s amount=%d error=%q", id, referenceId, req.Amount, err.Error()))
 		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "创建订单失败"})

@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -244,7 +245,12 @@ func RequestEpay(c *gin.Context) {
 		CreateTime:      time.Now().Unix(),
 		Status:          common.TopUpStatusPending,
 	}
-	err = topUp.Insert()
+	err = model.CreateTopUpWithLimit(topUp, operation_setting.GetTopUpLimitSetting().EffectiveMaxAbnormalPerDay())
+	if errors.Is(err, model.ErrTopUpAbnormalLimit) {
+		logger.LogWarn(c.Request.Context(), fmt.Sprintf("易支付 充值建单被防滥用限制拒绝 user_id=%d trade_no=%s payment_method=%s amount=%d", id, tradeNo, req.PaymentMethod, req.Amount))
+		c.JSON(http.StatusOK, gin.H{"message": "error", "data": err.Error()})
+		return
+	}
 	if err != nil {
 		logger.LogError(c.Request.Context(), fmt.Sprintf("易支付 创建充值订单失败 user_id=%d trade_no=%s payment_method=%s amount=%d error=%q", id, tradeNo, req.PaymentMethod, req.Amount, err.Error()))
 		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "创建订单失败"})

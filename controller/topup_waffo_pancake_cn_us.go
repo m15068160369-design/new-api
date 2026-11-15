@@ -8,6 +8,7 @@ package controller
 // no separate webhook handling; only the visible PaymentMethod type differs.
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -169,7 +170,12 @@ func handleWaffoPancakeChannelPay(c *gin.Context, ch waffoPancakeChannel) {
 		CreateTime:      time.Now().Unix(),
 		Status:          common.TopUpStatusPending,
 	}
-	if err := topUp.Insert(); err != nil {
+	if err := model.CreateTopUpWithLimit(topUp, operation_setting.GetTopUpLimitSetting().EffectiveMaxAbnormalPerDay()); err != nil {
+		if errors.Is(err, model.ErrTopUpAbnormalLimit) {
+			logger.LogWarn(c.Request.Context(), fmt.Sprintf("%s 充值建单被防滥用限制拒绝 user_id=%d trade_no=%s amount=%d", ch.displayName, id, tradeNo, req.Amount))
+			c.JSON(http.StatusOK, gin.H{"message": "error", "data": err.Error()})
+			return
+		}
 		logger.LogError(c.Request.Context(), fmt.Sprintf("%s 创建充值订单失败 user_id=%d trade_no=%s amount=%d error=%q", ch.displayName, id, tradeNo, req.Amount, err.Error()))
 		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "创建订单失败"})
 		return
