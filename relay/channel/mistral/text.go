@@ -156,6 +156,8 @@ func requestOpenAI2Mistral(request *dto.GeneralOpenAIRequest) (*mistralRequest, 
 	}
 	// [patch lou #19] 值域合法化（temperature≤1.5 / top_p∈(0,1] / penalties∈[-2,2] / n≥1）
 	sanitizeSamplingParams(out)
+	// [patch lou #19b] response_format 枚举合法化：非法值归 text
+	out.ResponseFormat = sanitizeResponseFormat(out.ResponseFormat)
 	if request.MaxTokens != nil || request.MaxCompletionTokens != nil {
 		maxTokens := request.GetMaxTokens()
 		out.MaxTokens = &maxTokens

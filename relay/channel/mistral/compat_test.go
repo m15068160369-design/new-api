@@ -83,6 +83,24 @@ func TestConvertMistralToolChoiceObject(t *testing.T) {
 	}
 }
 
+func TestSanitizeResponseFormat(t *testing.T) {
+	// nil 不动
+	if got := sanitizeResponseFormat(nil); got != nil {
+		t.Errorf("nil → %v, want nil", got)
+	}
+	// 合法值透传（含 json_schema 保留 JsonSchema 结构）
+	js := &dto.ResponseFormat{Type: "json_schema", JsonSchema: json.RawMessage(`{"name":"x"}`)}
+	if got := sanitizeResponseFormat(js); got != js {
+		t.Errorf("json_schema should pass through unchanged")
+	}
+	// 非法值归 text
+	for _, bad := range []string{"grammar", "json", "", "JSON"} {
+		if got := sanitizeResponseFormat(&dto.ResponseFormat{Type: bad}); got.Type != "text" {
+			t.Errorf("response_format(%q).Type = %q, want text", bad, got.Type)
+		}
+	}
+}
+
 func TestMistralRequestSerialization(t *testing.T) {
 	// seed 改名 random_seed + 无 seed 字段泄漏
 	seed := 42.0

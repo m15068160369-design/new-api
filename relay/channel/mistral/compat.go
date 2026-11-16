@@ -39,6 +39,20 @@ func clampFloat(v *float64, lo, hi float64) *float64 {
 	return v
 }
 
+// sanitizeResponseFormat 枚举合法化：Mistral 只认 text/json_object/json_schema，
+// 客户端发非常规值（如 grammar 等）会 422。非法值归 text（不施加格式约束，
+// 最保守），与 reasoning_effort 非法值归 max 同一兜底精神：不打回、就近合法。
+func sanitizeResponseFormat(rf *dto.ResponseFormat) *dto.ResponseFormat {
+	if rf == nil {
+		return nil
+	}
+	switch rf.Type {
+	case "text", "json_object", "json_schema":
+		return rf
+	}
+	return &dto.ResponseFormat{Type: "text"}
+}
+
 // sanitizeSamplingParams 值域合法化：temperature∈[0,1.5]、top_p∈(0,1]、
 // penalties∈[-2,2]、n≥1。top_p=0 是 exclusiveMinimum 违例，用极小值保语义。
 func sanitizeSamplingParams(req *dto.GeneralOpenAIRequest) {
