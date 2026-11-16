@@ -6,11 +6,28 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/dto"
 )
 
 var mistralToolCallIdRegexp = regexp.MustCompile("^[a-zA-Z0-9]{9}$")
+
+// [patch lou #20c] 上游原生工具 id 形态（实测响应 fixture：
+// chatcmpl-tool-b98077408ffbb009），历史回放原样放行=官方客户端同形
+// （mistral-vibe 原样回传模型返回的 id）。
+var mistralNativeToolIdRegexp = regexp.MustCompile("^chatcmpl-tool-[0-9a-f]+$")
+
+// mistralToolIdLegal：官方 9 字符 SDK 形态或上游原生形态，均原样放行。
+func mistralToolIdLegal(id string) bool {
+	return mistralToolCallIdRegexp.MatchString(id) || mistralNativeToolIdRegexp.MatchString(id)
+}
+
+// [patch lou #20c] 确定性 id 改写：sha256(原 id) 前 9 位 hex。同一历史 id 跨轮
+// 必得同一输出——原 GenerateRandomCharsKey 每轮随机，而 id 进 prompt token
+// 序列，任意轮漂移即从工具回合起前缀缓存全灭（跨轮字节稳定，楼令 20261117）。
+func deterministicMistralToolId(id string) string {
+	sum := sha256.Sum256([]byte("mistral-tool-id:" + id))
+	return fmt.Sprintf("%.9x", sum)[:9]
+}
 
 // [patch lou #15b] 把 assistant 思考内容+正文组装为 Mistral chunklet 数组回放，
 // 对齐官方客户端 mistral-vibe 的 _message_payload 形态：不带 closed/signature
@@ -53,7 +70,8 @@ func convertMistralToolChoice(tc any) any {
 // 截断，负值归 0）。
 type mistralRequest struct {
 	*dto.GeneralOpenAIRequest
-	RandomSeed *int64 `json:"random_seed,omitempty"`
+	RandomSeed *int64         `json:"random_seed,omitempty"`
+	Metadata   map[string]any `json:"metadata,omitempty"`
 }
 
 func requestOpenAI2Mistral(request *dto.GeneralOpenAIRequest) (*mistralRequest, string) {
@@ -79,15 +97,15 @@ func requestOpenAI2Mistral(request *dto.GeneralOpenAIRequest) (*mistralRequest, 
 		toolCalls := message.ParseToolCalls()
 		if toolCalls != nil {
 			for i := range toolCalls {
-				if !mistralToolCallIdRegexp.MatchString(toolCalls[i].ID) {
+				if !mistralToolIdLegal(toolCalls[i].ID) {
 					if newId, ok := idMap[toolCalls[i].ID]; ok {
 						toolCalls[i].ID = newId
 					} else {
-						newId, err := common.GenerateRandomCharsKey(9)
-						if err == nil {
-							idMap[toolCalls[i].ID] = newId
-							toolCalls[i].ID = newId
-						}
+						// [patch lou #20c] 确定性哈希改写替代随机：跨轮同 id 进同 id 出，
+						// 保前缀缓存（原 GenerateRandomCharsKey 每轮漂移）。
+						newId := deterministicMistralToolId(toolCalls[i].ID)
+						idMap[toolCalls[i].ID] = newId
+						toolCalls[i].ID = newId
 					}
 				}
 			}
@@ -99,12 +117,12 @@ func requestOpenAI2Mistral(request *dto.GeneralOpenAIRequest) (*mistralRequest, 
 			if newId, ok := idMap[message.ToolCallId]; ok {
 				message.ToolCallId = newId
 			} else {
-				if !mistralToolCallIdRegexp.MatchString(message.ToolCallId) {
-					newId, err := common.GenerateRandomCharsKey(9)
-					if err == nil {
-						idMap[message.ToolCallId] = newId
-						message.ToolCallId = newId
-					}
+				// [patch lou #20c] 与 tool_calls.id 同为确定性改写（正常路径先经
+				// assistant 消息命中 idMap，此分支为防御路径，与生成端同源保一致）
+				if !mistralToolIdLegal(message.ToolCallId) {
+					newId := deterministicMistralToolId(message.ToolCallId)
+					idMap[message.ToolCallId] = newId
+					message.ToolCallId = newId
 				}
 			}
 		}
@@ -176,6 +194,15 @@ func requestOpenAI2Mistral(request *dto.GeneralOpenAIRequest) (*mistralRequest, 
 	}
 	// [patch lou #19] 值域合法化（temperature≤1.5 / top_p∈(0,1] / penalties∈[-2,2] / n≥1）
 	sanitizeSamplingParams(out)
+	// [patch lou #20d] 官方客户端 tools 存在时恒发 parallel_tool_calls=true
+	// （mistral-vibe _completion.py 源码实证 kwargs["parallel_tool_calls"]=True）。
+	// 客户端显式设置过则透传其值；未设且带 tools 时补 true。
+	// （上游 dto 的 Go 字段名拼写作 ParallelTooCalls，json tag 正确）
+	out.ParallelTooCalls = request.ParallelTooCalls
+	if len(out.Tools) > 0 && out.ParallelTooCalls == nil {
+		v := true
+		out.ParallelTooCalls = &v
+	}
 	// [patch lou #19b] response_format 枚举合法化：非法值归 text
 	out.ResponseFormat = sanitizeResponseFormat(out.ResponseFormat)
 	if request.MaxTokens != nil || request.MaxCompletionTokens != nil {
@@ -202,8 +229,26 @@ func requestOpenAI2Mistral(request *dto.GeneralOpenAIRequest) (*mistralRequest, 
 		seed = deriveConversationAffinityKey(request.Messages)
 	}
 	affinityKey := affinityUUID(seed)
-	// [patch lou #19] 包装：embedding 扁平序列化追加 random_seed（OpenAI seed 改名）
+	// [patch lou #20b] 官方客户端每请求带 metadata 归属遥测（第一手键集，稳妥值集）：
+	// os/arch 如实（官方客户端也如实报自己）、session_id 与 x-affinity 同源、
+	// call_type 按官方语义近似判定（历史含工具结果消息=工具循环后续轮
+	// secondary_call，否则 main_call）；version/user_plan 服务端有真实订阅
+	// 数据可比对，留空不碰。
 	wrapped := &mistralRequest{GeneralOpenAIRequest: out}
+	meta := map[string]any{
+		"os":         "Linux",
+		"arch":       "x86_64",
+		"session_id": affinityKey,
+		"call_type":  "main_call",
+	}
+	for _, m := range request.Messages {
+		if m.Role == "tool" {
+			meta["call_type"] = "secondary_call"
+			break
+		}
+	}
+	wrapped.Metadata = meta
+	// [patch lou #19] 包装：embedding 扁平序列化追加 random_seed（OpenAI seed 改名）
 	if request.Seed != nil {
 		s := int64(*request.Seed)
 		if s < 0 {

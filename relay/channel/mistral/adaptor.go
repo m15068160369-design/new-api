@@ -52,9 +52,15 @@ func (a *Adaptor) GetRequestURL(info *relaycommon.RelayInfo) (string, error) {
 	return relaycommon.GetFullRequestURL(info.ChannelBaseUrl, info.RequestURLPath, info.ChannelType), nil
 }
 
+// [patch lou #20a] 官方客户端 UA 对齐：mistralai 3.5.0 SDK 默认 UA（现行
+// mistral-vibe 链路实测形态，SDK wheel _version.py 实证），替代 Go-http-client/1.1。
+const mistralOfficialUserAgent = "speakeasy-sdk/python 3.5.0 2.935.1 1.0.0 mistralai"
+
 func (a *Adaptor) SetupRequestHeader(c *gin.Context, req *http.Header, info *relaycommon.RelayInfo) error {
 	channel.SetupApiRequestHeader(info, c, req)
 	req.Set("Authorization", "Bearer "+info.ApiKey)
+	// [patch lou #20a] 伪装官方 SDK 调用者，去 Go 默认指纹
+	req.Set("User-Agent", mistralOfficialUserAgent)
 	mirrorAffinityHeader(c, req)
 	return nil
 }
