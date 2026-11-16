@@ -316,8 +316,11 @@ func TestRequestOpenAI2Mistral_ReasoningToChunklet(t *testing.T) {
 		t.Fatalf("assistant content should become 2-block chunklet, got %#v", out.Messages[1].Content)
 	}
 	think, _ := arr[0].(map[string]any)
-	if think["type"] != "thinking" || think["closed"] != true {
+	if think["type"] != "thinking" {
 		t.Errorf("thinking block wrong: %#v", think)
+	}
+	if _, has := think["closed"]; has {
+		t.Errorf("thinking block must not carry closed (openapi default:true, official client omits): %#v", think)
 	}
 	inner, _ := think["thinking"].([]any)
 	innerMap, _ := inner[0].(map[string]any)

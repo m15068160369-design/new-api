@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"regexp"
+	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/dto"
@@ -11,20 +12,25 @@ import (
 
 var mistralToolCallIdRegexp = regexp.MustCompile("^[a-zA-Z0-9]{9}$")
 
-// [patch lou #15a] 把 assistant 思考内容+正文组装为 Mistral ThinkChunk 数组，
-// 形态与上游响应 chunklet 一致（实测 zai-glm-5-3 回传 200）。
+// [patch lou #15b] 把 assistant 思考内容+正文组装为 Mistral chunklet 数组回放，
+// 对齐官方客户端 mistral-vibe 的 _message_payload 形态：不带 closed/signature
+// （closed 是响应侧流状态标记，openapi 定义 default:true——省略即服务端自补
+// true，带上恒真无信息）；text 为空时只回思考块（thinking-only assistant 轮，
+// Vibe 同形）。实测 zai-glm-5-3 回传 200。
 func buildAssistantChunklet(reasoning, text string) []any {
-	return []any{
+	chunks := []any{
 		map[string]any{
 			"type":     "thinking",
-			"closed":   true,
 			"thinking": []any{map[string]any{"type": "text", "text": reasoning}},
 		},
-		map[string]any{
+	}
+	if text != "" {
+		chunks = append(chunks, map[string]any{
 			"type": "text",
 			"text": text,
-		},
+		})
 	}
+	return chunks
 }
 
 // [patch lou #15a] Mistral 的 tool_choice 只认 none/auto/any（required 同样
@@ -137,11 +143,14 @@ func requestOpenAI2Mistral(request *dto.GeneralOpenAIRequest) (*mistralRequest, 
 			ToolCalls:  message.ToolCalls,
 			ToolCallId: message.ToolCallId,
 		}
-		// [patch lou #15a] 有思考内容的纯文本 assistant 消息 → 转 chunklet 数组回传，
-		// 让模型在后续轮次看到自己的推理轨迹（形态与上游响应 chunklet 一致，实测 200）。
-		// 覆盖 SetMediaContent 对 Content 的改写；content 为数组/tool_calls 消息不动。
-		if message.Role == "assistant" && assistantReasoning != "" && originalIsString &&
-			originalText != "" && message.ToolCalls == nil {
+		// [patch lou #15b] 官方对齐回放条件：assistant 轮只要带真实思考就转 chunklet
+		// 回传，让模型在后续轮次看到自己的推理轨迹（Mistral 官方文档要求 always
+		// replay full assistant message including thinking）。工具轮同样回放——
+		// thinking 与 tool_calls 同条消息是官方 mistral-vibe _message_payload 的
+		// 生产形态；text 为空只回思考块。纯空白占位（Hermes echo 协议的 " " 垫）
+		// 不建块，避免向上游发空思考块（官方从不制造）；content 为数组的消息不动。
+		// 覆盖 SetMediaContent 对 Content 的改写。
+		if message.Role == "assistant" && originalIsString && strings.TrimSpace(assistantReasoning) != "" {
 			newMsg.Content = buildAssistantChunklet(assistantReasoning, originalText)
 		}
 		messages = append(messages, newMsg)
