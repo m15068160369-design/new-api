@@ -25,16 +25,30 @@ func buildAssistantChunklet(reasoning, text string) []any {
 	}
 }
 
-// [patch lou #15a] Mistral 的 tool_choice 只认 none/auto/any，
-// OpenAI 标准的 "required" 直接透传会被拒，映射为语义最接近的 "any"。
+// [patch lou #15a] Mistral 的 tool_choice 只认 none/auto/any（required 同样
+// 合法，见 openapi ToolChoiceEnum），OpenAI 标准的 "required" 映射为 "any"；
+// 对象形态只留 function.name（Mistral FunctionName additionalProperties:false）。
 func convertMistralToolChoice(tc any) any {
 	if s, ok := tc.(string); ok && s == "required" {
 		return "any"
 	}
+	if m, ok := tc.(map[string]any); ok {
+		if fn, ok := m["function"].(map[string]any); ok {
+			m["function"] = map[string]any{"name": fn["name"]}
+		}
+	}
 	return tc
 }
 
-func requestOpenAI2Mistral(request *dto.GeneralOpenAIRequest) (*dto.GeneralOpenAIRequest, string) {
+// [patch lou #19] Mistral 请求包装：embedding 扁平序列化，在 OpenAI 结构上
+// 追加 Mistral 专属字段（random_seed）。OpenAI 的 seed 改名转发（float64 取整
+// 截断，负值归 0）。
+type mistralRequest struct {
+	*dto.GeneralOpenAIRequest
+	RandomSeed *int64 `json:"random_seed,omitempty"`
+}
+
+func requestOpenAI2Mistral(request *dto.GeneralOpenAIRequest) (*mistralRequest, string) {
 	// [patch lou #16] 返回第二值：本请求的缓存亲和 key（prompt_cache_key / 派生值），
 	// 供 SetupRequestHeader 镜像进 x-affinity。
 	messages := make([]dto.Message, 0, len(request.Messages))
@@ -129,7 +143,19 @@ func requestOpenAI2Mistral(request *dto.GeneralOpenAIRequest) (*dto.GeneralOpenA
 		TopP:        request.TopP,
 		Tools:       request.Tools,
 		ToolChoice:  convertMistralToolChoice(request.ToolChoice),
+		// [patch lou #19] 以下字段此前静默丢弃，Mistral schema 原生支持，转发：
+		Stop:             request.Stop,
+		N:                request.N,
+		FrequencyPenalty: request.FrequencyPenalty,
+		PresencePenalty:  request.PresencePenalty,
+		ResponseFormat:   request.ResponseFormat,
+		LogProbs:         request.LogProbs,
+		TopLogProbs:     request.TopLogProbs,
+		// Seed 不直接放 out（OpenAI 字段名 seed Mistral 不认），包装层改名 random_seed
+		Seed: nil,
 	}
+	// [patch lou #19] 值域合法化（temperature≤1.5 / top_p∈(0,1] / penalties∈[-2,2] / n≥1）
+	sanitizeSamplingParams(out)
 	if request.MaxTokens != nil || request.MaxCompletionTokens != nil {
 		maxTokens := request.GetMaxTokens()
 		out.MaxTokens = &maxTokens
@@ -151,7 +177,16 @@ func requestOpenAI2Mistral(request *dto.GeneralOpenAIRequest) (*dto.GeneralOpenA
 		affinityKey = deriveConversationAffinityKey(request.Messages)
 	}
 	out.PromptCacheKey = affinityKey
-	return out, affinityKey
+	// [patch lou #19] 包装：embedding 扁平序列化追加 random_seed（OpenAI seed 改名）
+	wrapped := &mistralRequest{GeneralOpenAIRequest: out}
+	if request.Seed != nil {
+		s := int64(*request.Seed)
+		if s < 0 {
+			s = 0
+		}
+		wrapped.RandomSeed = &s
+	}
+	return wrapped, affinityKey
 }
 
 // [patch lou #16b] 从对话根派生稳定的缓存亲和 key：取首条 user 消息
