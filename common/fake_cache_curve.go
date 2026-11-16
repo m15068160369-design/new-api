@@ -1,6 +1,6 @@
 package common
 
-// FakeCacheTokens [patch lou #6 v6] 返回免费渠道(ch11-20)假缓存注入的 cached_tokens，
+// FakeCacheTokens [patch lou #6 v6] 返回免费渠道(ch11-15)假缓存注入的 cached_tokens，
 // 双参数线性模型 cache = a·p − D（整数实现 (2497·p − 2507500)/2500，即
 // a=0.9988=2497/2500、D=1003；返回 0 = 不注入，保留上游真实报告）。
 // 参数按 ch21-40(ClinePass) 30天日志「连续使用」分支（真缓存占比≥80%，11,050 条）

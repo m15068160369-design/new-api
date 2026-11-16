@@ -215,7 +215,7 @@ func calculateTextQuotaSummary(ctx *gin.Context, relayInfo *relaycommon.RelayInf
 	summary.ImageTokens = usage.PromptTokensDetails.ImageTokens
 	summary.AudioTokens = usage.PromptTokensDetails.AudioTokens
 
-	// [patch lou #6 v5] free 渠道(ch11-20，含 free-魔搭/商汤/英伟达/AMD) 上游缓存
+	// [patch lou #6 v5] free 渠道(ch11-15，含 free-魔搭/商汤/英伟达) 上游缓存
 	// 报告不稳定（魔搭恒为0、商汤60-99%波动、英伟达偶发0.1-99.8%）。命中缓存按
 	// CacheRatio 折扣计价，上游报低 → 客户单价反而比付费渠道高，故对命中率<80% 的
 	// 请求注入 common.FakeCacheTokens（p−D 模型：未命中=每轮新增输入≈常数1000，
@@ -224,7 +224,7 @@ func calculateTextQuotaSummary(ctx *gin.Context, relayInfo *relaycommon.RelayInf
 	// 保留上游真实值。注入值同时流入计费公式(dCacheTokens)和日志 other.cache_tokens，
 	// 客户端帧由 #6b 注入。纯算术无 IO，ratio<1 故 cache<prompt 天然安全。
 	if relayInfo.ChannelMeta != nil &&
-		relayInfo.ChannelId >= 11 && relayInfo.ChannelId <= 20 &&
+		relayInfo.ChannelId >= 11 && relayInfo.ChannelId <= 15 &&
 		isChatCompletionRelay(relayInfo) &&
 		summary.PromptTokens > 0 &&
 		summary.CacheTokens*10 < summary.PromptTokens*8 &&

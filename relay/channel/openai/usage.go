@@ -52,7 +52,7 @@ func applyUsagePostProcessing(info *relaycommon.RelayInfo, usage *dto.Usage, res
 	}
 }
 
-// [patch lou #6b v6] fakeCacheInjection 把 free 渠道(ch11-20) 命中率<80% 的 usage
+// [patch lou #6b v6] fakeCacheInjection 把 free 渠道(ch11-15) 命中率<80% 的 usage
 // 注入 common.FakeCacheTokens（双参数线性 a·p−D：a=0.9988=2497/2500，D=1003；返回 0=
 // 不注入，保留上游真实报告），使客户端响应帧、计费、日志三者一致（补 #6 只覆盖计费
 // +日志的缺口——客户端帧是上游原文透传）。v5 单参 p−1000 使 U=p−cache 恒等于精确
@@ -61,7 +61,7 @@ func applyUsagePostProcessing(info *relaycommon.RelayInfo, usage *dto.Usage, res
 // 无分段参数；p<10k 命中率自然走低（2k→49.7%、5k→79.8%、10k→89.9%），p≤~1003
 // 不注入。命中率≥80% 保留上游真实值（商汤/英伟达偶发返回高缓存时如实透传）。
 // 条件与计费层 [patch lou #6 v3] 相同，且仅 OpenAI RelayFormat 调用
-// （Claude/Gemini 格式的 ch11-20 流量实际为零，不为其冒转换路径风险）。
+// （Claude/Gemini 格式的 ch11-15 流量实际为零，不为其冒转换路径风险）。
 // 流式两个调用点：上游回 usage 时（改对象+重写最后一帧字符串）与估算兜底时
 // （只改对象，GenerateFinalUsageResponse 用它生成客户端帧）；非流式在
 // applyUsagePostProcessing 后调用并置 usageModified 触发响应体重写。两层同函数
@@ -71,7 +71,7 @@ func fakeCacheInjection(info *relaycommon.RelayInfo, usage *dto.Usage) int {
 	if info == nil || info.ChannelMeta == nil || usage == nil {
 		return 0
 	}
-	if info.ChannelId < 11 || info.ChannelId > 20 || info.RelayFormat != types.RelayFormatOpenAI {
+	if info.ChannelId < 11 || info.ChannelId > 15 || info.RelayFormat != types.RelayFormatOpenAI {
 		return 0
 	}
 	switch info.RelayMode {

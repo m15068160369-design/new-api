@@ -1,7 +1,7 @@
 package openai
 
 // [patch lou #6b v6] fakeCacheInjection + rewriteStreamUsageCachedTokens 的测试。
-// 覆盖：ch11-20 OpenAI 流式注入、范围守卫（ch10/ch21 边界外、ch20 边界内）、
+// 覆盖：ch11-15 OpenAI 流式注入、范围守卫（ch10/ch16 边界外、ch15 边界内）、
 // RelayMode 守卫、RelayFormat 守卫、上游真缓存<80% 覆盖为双参 a·p−D 值(v6: a=0.9988/
 // D=1003，小 p 低命中、p≤~1003 不注入保留真实)、真缓存≥80% 保留、CacheRatio 边界、
 // 双参接线、小输入保留真实报告、帧重写（含上游缺 prompt_tokens_details 字段时补造）、
@@ -58,15 +58,16 @@ func TestFakeCacheInjectionByPromptSize(t *testing.T) {
 	}
 }
 
-func TestFakeCacheInjectionCh20RangeBoundaries(t *testing.T) {
-	// ch20 在范围(11-20)内 → 注入；ch10/ch21 在范围外 → 不注入
-	for _, ch := range []int{10, 21} {
+func TestFakeCacheInjectionCh15RangeBoundaries(t *testing.T) {
+	// ch15 在范围(11-15)内 → 注入；ch10/ch16 在范围外 → 不注入
+	// （v3 范围曾到 ch20，20261115 楼令收窄到 ch11-15）
+	for _, ch := range []int{10, 16} {
 		info := make6bInfo(ch, relayconstant.RelayModeChatCompletions, types.RelayFormatOpenAI, 0.25)
 		usage := &dto.Usage{PromptTokens: 1000}
 		require.Equal(t, 0, fakeCacheInjection(info, usage), "ch%d 应被范围守卫拦截", ch)
 		require.Equal(t, 0, usage.PromptTokensDetails.CachedTokens)
 	}
-	info := make6bInfo(20, relayconstant.RelayModeChatCompletions, types.RelayFormatOpenAI, 0.25)
+	info := make6bInfo(15, relayconstant.RelayModeChatCompletions, types.RelayFormatOpenAI, 0.25)
 	usage := &dto.Usage{PromptTokens: 2000}
 	require.Equal(t, 994, fakeCacheInjection(info, usage)) // p=2000 → 994
 	require.Equal(t, 994, usage.PromptTokensDetails.CachedTokens)
