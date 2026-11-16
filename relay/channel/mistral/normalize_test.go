@@ -406,21 +406,24 @@ func TestRequestOpenAI2Mistral_ReasoningEffortPassthrough(t *testing.T) {
 }
 
 func TestRequestOpenAI2Mistral_PromptCacheKeyAndAffinity(t *testing.T) {
-	// 客户端给了 prompt_cache_key：原样透传并作为 affinity key 返回
+	// [patch lou #16d] 客户端给了 prompt_cache_key：只作种子（不透传 body），affinity 为 UUID 形状
 	req := &dto.GeneralOpenAIRequest{
 		Model:          "glm-5.3",
 		PromptCacheKey: "client-key-123",
 		Messages:       []dto.Message{{Role: "user", Content: "hi"}},
 	}
 	out, aff := requestOpenAI2Mistral(req)
-	if out.PromptCacheKey != "client-key-123" || aff != "client-key-123" {
-		t.Errorf("client cache key must passthrough verbatim, got %q/%q", out.PromptCacheKey, aff)
+	if out.PromptCacheKey != "" {
+		t.Errorf("body prompt_cache_key must NOT be sent (official client never sends it), got %q", out.PromptCacheKey)
+	}
+	if !isUUIDv4Shape(aff) {
+		t.Errorf("client-seeded affinity must be UUID-shaped, got %q", aff)
 	}
 
-	// 没给 key：从首条 user 派生稳定 key；同会话第二轮（历史追加）派生值不变
+	// 没给 key：从首条 user 派生种子；同会话第二轮（历史追加）UUID 不变
 	req2 := &dto.GeneralOpenAIRequest{
 		Model:    "glm-5.3",
-		Messages: []dto.Message{{Role: "user", Content: "帮我写排序"}, {Role: "assistant", Content: "ok"}},
+		Messages:  []dto.Message{{Role: "user", Content: "帮我写排序"}, {Role: "assistant", Content: "ok"}},
 	}
 	out2, aff2 := requestOpenAI2Mistral(req2)
 	req3 := &dto.GeneralOpenAIRequest{
@@ -432,25 +435,25 @@ func TestRequestOpenAI2Mistral_PromptCacheKeyAndAffinity(t *testing.T) {
 		},
 	}
 	out3, aff3 := requestOpenAI2Mistral(req3)
-	if aff2 == "" {
-		t.Fatalf("derived key must not be empty")
+	if !isUUIDv4Shape(aff2) {
+		t.Fatalf("derived affinity must be UUID-shaped, got %q", aff2)
 	}
 	if aff2 != aff3 {
-		t.Errorf("same conversation turn-2 must keep same key: %q vs %q", aff2, aff3)
+		t.Errorf("same conversation turn-2 must keep same UUID: %q vs %q", aff2, aff3)
 	}
-	if out2.PromptCacheKey != aff2 || out3.PromptCacheKey != aff3 {
-		t.Errorf("out.PromptCacheKey must mirror affinity key")
+	if out2.PromptCacheKey != "" || out3.PromptCacheKey != "" {
+		t.Errorf("body prompt_cache_key must stay empty")
 	}
-	// 不同对话派生不同 key
+	// 不同对话派生不同 UUID
 	req4 := &dto.GeneralOpenAIRequest{
 		Model:    "glm-5.3",
 		Messages: []dto.Message{{Role: "user", Content: "完全不同的问题"}},
 	}
 	_, aff4 := requestOpenAI2Mistral(req4)
 	if aff4 == aff2 {
-		t.Errorf("different conversation root must derive different key")
+		t.Errorf("different conversation root must derive different UUID")
 	}
-	// 没有 user 消息（纯 instructions）：key 为空，不注 x-affinity 也不加 body 字段
+	// 没有 user 消息（纯 instructions）：无种子 → 空 key，x-affinity 不注
 	req5 := &dto.GeneralOpenAIRequest{
 		Model:    "glm-5.3",
 		Messages: []dto.Message{{Role: "system", Content: "sys"}},
@@ -461,19 +464,56 @@ func TestRequestOpenAI2Mistral_PromptCacheKeyAndAffinity(t *testing.T) {
 	}
 }
 
+func isUUIDv4Shape(s string) bool {
+	if len(s) != 36 {
+		return false
+	}
+	for i, r := range s {
+		switch i {
+		case 8, 13, 18, 23:
+			if r != '-' {
+				return false
+			}
+		default:
+			if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')) {
+				return false
+			}
+		}
+	}
+	return s[14] == '4' && (s[19] == '8' || s[19] == '9' || s[19] == 'a' || s[19] == 'b')
+}
+
+func TestAffinityUUID_DeterministicAndShaped(t *testing.T) {
+	// [patch lou #16d] 同种子同 UUID、异种子异 UUID、v4 形状、CJK 种子安全
+	a := affinityUUID("用一句话解释二分法")
+	b := affinityUUID("用一句话解释二分法")
+	c := affinityUUID("另一个问题")
+	if a == "" || a != b {
+		t.Fatalf("deterministic same-seed UUID expected: %q vs %q", a, b)
+	}
+	if a == c {
+		t.Errorf("different seeds must produce different UUIDs")
+	}
+	if !isUUIDv4Shape(a) {
+		t.Errorf("CJK seed must produce UUIDv4 shape, got %q", a)
+	}
+	if affinityUUID("") != "" {
+		t.Errorf("empty seed must map to empty UUID")
+	}
+}
+
 func TestDeriveConversationAffinityKey_PlaintextPrefix64(t *testing.T) {
-	// [patch lou #16b] 明文前缀派生：长首消息截 64 字符（rune，不切半汉字）
+	// [patch lou #16b→#16d] 种子截断语义保留：长首消息截 64 rune，同前缀轮次稳定
 	long := strings.Repeat("汉", 100)
 	req := &dto.GeneralOpenAIRequest{
 		Model:    "glm-5.3",
 		Messages: []dto.Message{{Role: "user", Content: long}, {Role: "user", Content: "second"}},
 	}
 	_, aff := requestOpenAI2Mistral(req)
-	want := strings.Repeat("汉", 64)
-	if aff != want {
-		t.Errorf("long first user must truncate to 64 runes, got len=%d", len([]rune(aff)))
+	if !isUUIDv4Shape(aff) {
+		t.Fatalf("long CJK first user must yield UUID, got %q", aff)
 	}
-	// 同前缀不同尾巴：截断后同 key（64 字符边界内视为同根）
+	// 同前缀不同尾巴（追加轮）：UUID 相同
 	req2 := &dto.GeneralOpenAIRequest{
 		Model: "glm-5.3",
 		Messages: []dto.Message{
@@ -482,54 +522,43 @@ func TestDeriveConversationAffinityKey_PlaintextPrefix64(t *testing.T) {
 			{Role: "user", Content: "追加轮"},
 		},
 	}
-	out2, aff2 := requestOpenAI2Mistral(req2)
+	_, aff2 := requestOpenAI2Mistral(req2)
 	if aff2 != aff {
-		t.Errorf("same session turn-2 must keep same key: %q vs %q", aff, aff2)
+		t.Errorf("same session turn-2 must keep same UUID: %q vs %q", aff, aff2)
 	}
-	if out2.PromptCacheKey != aff2 {
-		t.Errorf("out.PromptCacheKey must mirror affinity key")
-	}
-	// 短消息：全文即 key，无截断
-	short := "你好"
-	req3 := &dto.GeneralOpenAIRequest{
-		Model:    "glm-5.3",
-		Messages: []dto.Message{{Role: "user", Content: short}},
-	}
-	_, aff3 := requestOpenAI2Mistral(req3)
-	if aff3 != "你好" {
-		t.Errorf("short message must map verbatim, got %q", aff3)
+	// 种子直接验证：64 rune 截断
+	if got := deriveConversationAffinityKey(req.Messages); len([]rune(got)) != 64 {
+		t.Errorf("seed must truncate to 64 runes, got %d", len([]rune(got)))
 	}
 	// 多条 user：只取第一条（对话根）
 	req4 := &dto.GeneralOpenAIRequest{
 		Model:    "glm-5.3",
 		Messages: []dto.Message{{Role: "user", Content: "第一条"}, {Role: "user", Content: "第二条"}},
 	}
-	_, aff4 := requestOpenAI2Mistral(req4)
-	if aff4 != "第一条" {
-		t.Errorf("first user message only, got %q", aff4)
+	if got := deriveConversationAffinityKey(req4.Messages); got != "第一条" {
+		t.Errorf("first user message only, got %q", got)
 	}
 }
 
 func TestSetupRequestHeader_XAffinityMirror(t *testing.T) {
-	// Convert 存 key，mirrorAffinityHeader 镜像 x-affinity（base64url 编码，
-	// ASCII 安全——中文明文 key 直接进 header 会让上游 HTTP 层 500）；无 key 不加头
+	// [patch lou #16d] UUID 值直接透传（hex 纯 ASCII）；非 ASCII 兜底 base64url；无 key 不加头
 	gin.SetMode(gin.TestMode)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
-	c.Set(mistralAffinityCtxKey, "aff-abc")
+	c.Set(mistralAffinityCtxKey, "1a2b3c4d-5e6f-4a1b-8c2d-9e0f1a2b3c4d")
 	h := http.Header{}
 	mirrorAffinityHeader(c, &h)
-	if got := h.Get("x-affinity"); got != "YWZmLWFiYw" {
-		t.Errorf("x-affinity must be base64url of ctx key, got %q", got)
+	if got := h.Get("x-affinity"); got != "1a2b3c4d-5e6f-4a1b-8c2d-9e0f1a2b3c4d" {
+		t.Errorf("UUID key must pass through verbatim, got %q", got)
 	}
 
-	// [patch lou #16c] 中文明文 key（#16b 派生值）→ header 值必须是纯 ASCII
+	// 非 ASCII 兜底路径（老 ctx 残留值防御）：编码后纯 ASCII
 	cn, _ := gin.CreateTestContext(httptest.NewRecorder())
 	cn.Set(mistralAffinityCtxKey, "用一句话解释二分法")
 	h3 := http.Header{}
 	mirrorAffinityHeader(cn, &h3)
 	got3 := h3.Get("x-affinity")
 	if got3 != "55So5LiA5Y-l6K-d6Kej6YeK5LqM5YiG5rOV" {
-		t.Errorf("CJK key must encode to base64url, got %q", got3)
+		t.Errorf("CJK residual key must encode to base64url, got %q", got3)
 	}
 	for _, r := range got3 {
 		if r > 127 {

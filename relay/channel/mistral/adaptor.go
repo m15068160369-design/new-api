@@ -59,15 +59,30 @@ func (a *Adaptor) SetupRequestHeader(c *gin.Context, req *http.Header, info *rel
 	return nil
 }
 
-// [patch lou #16c] 镜像缓存亲和 key 进 x-affinity header（kaecho/mistral 双通道实践）。
-// header 值用 base64url 编码：HTTP header 只允许 ASCII，#16b 的中文明文 key
-// 直接进 header 会让上游 HTTP 处理层 500（2026-11-13 生产实测：中文 key 全
-// 500 / 英文 key 200，判别实验实锤；body 的 prompt_cache_key 保持明文不变）。
+// [patch lou #16d] 镜像缓存亲和 key 进 x-affinity header（官方 mistral-vibe
+// 唯一缓存通道）。#16d 起值已是 UUID（hex 纯 ASCII）直接透传；防御性保留
+// base64url 兜底：万一 ctx 里出现非 ASCII 值（老路径残留），编码后再发——
+// HTTP header 只允许 ASCII，中文明文进 header 会让上游 HTTP 层 500
+// （2026-11-13 #16c 生产实测）。
 // 独立小函数便于单测（不依赖 gin.Context 的请求级初始化）。
 func mirrorAffinityHeader(c *gin.Context, req *http.Header) {
-	if key := c.GetString(mistralAffinityCtxKey); key != "" {
-		req.Set("x-affinity", base64.RawURLEncoding.EncodeToString([]byte(key)))
+	key := c.GetString(mistralAffinityCtxKey)
+	if key == "" {
+		return
 	}
+	if !isASCII(key) {
+		key = base64.RawURLEncoding.EncodeToString([]byte(key))
+	}
+	req.Set("x-affinity", key)
+}
+
+func isASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] > 127 {
+			return false
+		}
+	}
+	return true
 }
 
 func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayInfo, request *dto.GeneralOpenAIRequest) (any, error) {

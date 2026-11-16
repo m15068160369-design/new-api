@@ -1,6 +1,8 @@
 package mistral
 
 import (
+	"crypto/sha256"
+	"fmt"
 	"regexp"
 
 	"github.com/QuantumNous/new-api/common"
@@ -178,16 +180,19 @@ func requestOpenAI2Mistral(request *dto.GeneralOpenAIRequest) (*mistralRequest, 
 	if request.ReasoningEffort != "" {
 		out.ReasoningEffort = normalizeReasoningEffort(request.ReasoningEffort, request.Model)
 	}
-	// [patch lou #16] 缓存亲和 key：客户端给了 prompt_cache_key（CPA 的
-	// support-prompt-cache-key 开关即发此字段）则原样透传；否则从对话根
-	// （首条 system/developer 指令 + 首条 user 消息）派生稳定 key，让同一会话的
-	// 后续轮次与压缩重放命中同一缓存节点。key 同时镜像进 x-affinity header
-	// （vibe 端点习惯，kaecho/mistral 实践）。
-	affinityKey := request.PromptCacheKey
-	if affinityKey == "" {
-		affinityKey = deriveConversationAffinityKey(request.Messages)
+	// [patch lou #16d] 缓存亲和 key 升级为 UUID 形状（对齐官方 mistral-vibe
+	// generate_session_id 的 xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx 形状——社区
+	// 实测非 UUID 形状的 x-affinity 值可能被上游静默忽略，20261116 源码核对
+	// 官方客户端全仓库不发 prompt_cache_key（adapters/mistral.py 的 kwargs 里
+	// 无此字段），楼拍板我们也不发 body 字段，只走 x-affinity header 通道。
+	// 种子仍然取首条 user 前 64 字符（#16b，会话内稳定），SHA-256 派生确定性
+	// UUID：同会话同 UUID、异会话异 UUID，且天然 ASCII（hex），无需 base64。
+	// 客户端显式传 prompt_cache_key 的也纳入种子（尊重其分组意图）但不透传。
+	seed := request.PromptCacheKey
+	if seed == "" {
+		seed = deriveConversationAffinityKey(request.Messages)
 	}
-	out.PromptCacheKey = affinityKey
+	affinityKey := affinityUUID(seed)
 	// [patch lou #19] 包装：embedding 扁平序列化追加 random_seed（OpenAI seed 改名）
 	wrapped := &mistralRequest{GeneralOpenAIRequest: out}
 	if request.Seed != nil {
@@ -200,12 +205,10 @@ func requestOpenAI2Mistral(request *dto.GeneralOpenAIRequest) (*mistralRequest, 
 	return wrapped, affinityKey
 }
 
-// [patch lou #16b] 从对话根派生稳定的缓存亲和 key：取首条 user 消息
-// 的前 64 个字符（rune）明文。会话演进中首条 user 不变，故每轮 key 相同、
-// 同一缓存节点（Mistral 官方机制：prompt_cache_key 提高缓存命中路由概率）。
-// 楼先生拍板由 SHA-256 指纹改为明文前缀：效果等价，中转站场景零开销优先。
-// 按字符截断避免中文拦腰断字节；短首消息（<64 字符）区分度略降，
-// 撞 key 只影响路由不影响正确性。
+// [patch lou #16b] 从对话根派生稳定的缓存亲和种子：取首条 user 消息
+// 的前 64 个字符（rune）。会话演进中首条 user 不变，故每轮种子相同。
+// 按字符截断避免中文拦腰断字节；撞 key 只影响路由不影响正确性。
+// #16d 起本值只作为种子，进 affinityUUID 哈希成 UUID 形状再上 header。
 func deriveConversationAffinityKey(messages []dto.Message) string {
 	root := ""
 	for _, m := range messages {
@@ -222,4 +225,19 @@ func deriveConversationAffinityKey(messages []dto.Message) string {
 		runes = runes[:64]
 	}
 	return string(runes)
+}
+
+// [patch lou #16d] 种子 → 确定性 UUID（v4 形状）：SHA-256 取前 16 字节，
+// 强制 version=4（第 7 字节高 4 位）与 RFC 4122 variant（第 9 字节高 2 位），
+// 格式化为官方 mistral-vibe generate_session_id 同款形状。确定性保证同种子
+// 同 UUID（会话内稳定、重启不变）；hex 天然 ASCII，无需 base64 编码。
+func affinityUUID(seed string) string {
+	if seed == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(seed))
+	b := sum[:16]
+	b[6] = (b[6] & 0x0f) | 0x40 // version 4
+	b[8] = (b[8] & 0x3f) | 0x80 // variant 10
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
