@@ -112,6 +112,15 @@ func requestOpenAI2Mistral(request *dto.GeneralOpenAIRequest) (*mistralRequest, 
 				mediaMessages[j] = mediaMessage
 			}
 		}
+		// [patch lou #19c] chunk 白名单过滤：Mistral ContentChunk oneOf 只认
+		// text/image_url/document_url/reference/file/thinking。客户端可能发
+		// input_audio/video_url 等 OpenAI/阿里系 chunk，原样序列化会 422；
+		// 空 text chunk 的 text 字段 omitempty 丢失会违反 TextChunk required。
+		// 只保留 text（补空串保 required）与 image_url（转 url 字符串形态），
+		// 其余丢弃；全空时退化为空串 content（所有 role 都接受 string）。
+		if message.Role != "assistant" || message.ToolCalls == nil {
+			mediaMessages = sanitizeContentChunks(mediaMessages)
+		}
 		message.SetMediaContent(mediaMessages)
 		// [patch lou #16] Mistral 只认 system/user/assistant/tool 四种 role（实测 422
 		// `Input tag 'developer' ... does not match any of the expected tags`，

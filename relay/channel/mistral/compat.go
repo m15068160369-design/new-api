@@ -39,6 +39,31 @@ func clampFloat(v *float64, lo, hi float64) *float64 {
 	return v
 }
 
+// sanitizeContentChunks [patch lou #19c] 消息层 chunk 白名单：Mistral
+// ContentChunk oneOf 只认 text/image_url/document_url/reference/file/thinking。
+// 客户端可能发 input_audio（OpenAI 语音）/ video_url（阿里系）等 chunk，
+// 原样序列化会 422 extra_forbidden/oneOf 失配。策略：
+//   - text chunk：保留，text 为空时补空串（TextChunk required:[text]，
+//     dto omitempty 会把空串吞掉造成 422）
+//   - image_url：保留（上游已转 url 字符串形态，ImageURLChunk 接受 string）
+//   - 其余类型（input_audio/video_url/file 等）：丢弃，不拒请求
+//   - 全部被丢弃/空列表：退化为单个空 text chunk（所有 role 接受 string 形态）
+func sanitizeContentChunks(chunks []dto.MediaContent) []dto.MediaContent {
+	out := make([]dto.MediaContent, 0, len(chunks))
+	for _, c := range chunks {
+		switch c.Type {
+		case dto.ContentTypeText:
+			out = append(out, dto.MediaContent{Type: dto.ContentTypeText, Text: c.Text})
+		case dto.ContentTypeImageURL:
+			out = append(out, c)
+		}
+	}
+	if len(out) == 0 {
+		return []dto.MediaContent{{Type: dto.ContentTypeText, Text: ""}}
+	}
+	return out
+}
+
 // sanitizeResponseFormat 枚举合法化：Mistral 只认 text/json_object/json_schema，
 // 客户端发非常规值（如 grammar 等）会 422。非法值归 text（不施加格式约束，
 // 最保守），与 reasoning_effort 非法值归 max 同一兜底精神：不打回、就近合法。
