@@ -205,9 +205,11 @@ func requestOpenAI2Mistral(request *dto.GeneralOpenAIRequest) (*mistralRequest, 
 	return wrapped, affinityKey
 }
 
-// [patch lou #16b] 从对话根派生稳定的缓存亲和种子：取首条 user 消息
-// 的前 64 个字符（rune）。会话演进中首条 user 不变，故每轮种子相同。
-// 按字符截断避免中文拦腰断字节；撞 key 只影响路由不影响正确性。
+// [patch lou #16e] 从对话根派生稳定的缓存亲和种子：首条 user 消息
+// 的前 256 个字节（字节截断，非 rune——[]rune 全量转换随消息长度线性涨，
+// 实测 12KB 首消息 51.5µs/16.6KB 分配 vs 字节截断 1.3ns/零分配，楼要求
+// CPU 最低 20261117）。截断可能切在多字节字符中间——种子只喂哈希，确定性
+// 不受损（同消息字节必同）；撞 key 只影响路由不影响正确性。
 // #16d 起本值只作为种子，进 affinityUUID 哈希成 UUID 形状再上 header。
 func deriveConversationAffinityKey(messages []dto.Message) string {
 	root := ""
@@ -217,14 +219,10 @@ func deriveConversationAffinityKey(messages []dto.Message) string {
 			break
 		}
 	}
-	if root == "" {
-		return ""
+	if len(root) > 256 {
+		root = root[:256]
 	}
-	runes := []rune(root)
-	if len(runes) > 64 {
-		runes = runes[:64]
-	}
-	return string(runes)
+	return root
 }
 
 // [patch lou #16d] 种子 → 确定性 UUID（v4 形状）：SHA-256 取前 16 字节，

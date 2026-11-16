@@ -503,8 +503,8 @@ func TestAffinityUUID_DeterministicAndShaped(t *testing.T) {
 }
 
 func TestDeriveConversationAffinityKey_PlaintextPrefix64(t *testing.T) {
-	// [patch lou #16b→#16d] 种子截断语义保留：长首消息截 64 rune，同前缀轮次稳定
-	long := strings.Repeat("汉", 100)
+	// [patch lou #16b→#16e] 种子截断语义：字节截 256（非 rune）；同前缀轮次稳定
+	long := strings.Repeat("汉", 100) // 300 bytes
 	req := &dto.GeneralOpenAIRequest{
 		Model:    "glm-5.3",
 		Messages: []dto.Message{{Role: "user", Content: long}, {Role: "user", Content: "second"}},
@@ -526,9 +526,16 @@ func TestDeriveConversationAffinityKey_PlaintextPrefix64(t *testing.T) {
 	if aff2 != aff {
 		t.Errorf("same session turn-2 must keep same UUID: %q vs %q", aff, aff2)
 	}
-	// 种子直接验证：64 rune 截断
-	if got := deriveConversationAffinityKey(req.Messages); len([]rune(got)) != 64 {
-		t.Errorf("seed must truncate to 64 runes, got %d", len([]rune(got)))
+	// 种子直接验证：字节截断到 256 字节，超长部分丢弃
+	if got := deriveConversationAffinityKey(req.Messages); len(got) != 256 {
+		t.Errorf("seed must truncate to 256 bytes, got %d", len(got))
+	}
+	// 短消息：不截断、空消息安全
+	if got := deriveConversationAffinityKey([]dto.Message{{Role: "user", Content: "第一条"}}); got != "第一条" {
+		t.Errorf("short seed must pass verbatim, got %q", got)
+	}
+	if got := deriveConversationAffinityKey([]dto.Message{{Role: "system", Content: "sys"}}); got != "" {
+		t.Errorf("no user message → empty seed, got %q", got)
 	}
 	// 多条 user：只取第一条（对话根）
 	req4 := &dto.GeneralOpenAIRequest{
