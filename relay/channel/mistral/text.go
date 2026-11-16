@@ -134,12 +134,12 @@ func requestOpenAI2Mistral(request *dto.GeneralOpenAIRequest) (*dto.GeneralOpenA
 		maxTokens := request.GetMaxTokens()
 		out.MaxTokens = &maxTokens
 	}
-	// [patch lou #16] reasoning_effort 透传：此前白名单静默丢弃，楼补丁 #13 在网关层
-	// 纠正过的合法值（zai-glm-5-3 认 max/high/low）根本到不了上游。现在保持客户端/网关
-	// 注入值原样上行。注意：未来渠道若加 mistral 自家非思考模型（如 mistral-large 会报
-	// reasoning_effort is not enabled），需按模型评估是否透传。
+	// [patch lou #18] reasoning_effort 合法化（替换 #16 的原样直通）：#13 只修
+	// openai 通用路径，Mistral 渠道走本包 ConvertRequest 绕过了它，实测 ch1
+	// none/medium 均被上游 400。per-model 合法值集见 reasoning_effort_fix.go，
+	// 非法值就近映射（只升不降），合法值透传。
 	if request.ReasoningEffort != "" {
-		out.ReasoningEffort = request.ReasoningEffort
+		out.ReasoningEffort = normalizeReasoningEffort(request.ReasoningEffort, request.Model)
 	}
 	// [patch lou #16] 缓存亲和 key：客户端给了 prompt_cache_key（CPA 的
 	// support-prompt-cache-key 开关即发此字段）则原样透传；否则从对话根
