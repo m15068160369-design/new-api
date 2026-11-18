@@ -186,21 +186,6 @@ var BatchUpdateInterval int
 var RelayTimeout int // unit is second
 
 var RelayIdleConnTimeout int // unit is second
-
-// RelayResponseHeaderTimeout limits how long the relay transport waits for the
-// upstream response headers after the request has been fully written.
-// 0 disables it (previous behaviour: wait forever).
-//
-// Note this is NOT the same as RelayTimeout (http.Client.Timeout), which covers
-// the whole response read and therefore breaks legitimate long streaming calls.
-// ResponseHeaderTimeout only bounds the wait for the response headers; once the
-// headers arrive, streaming is unaffected.
-//
-// [backport upstream #6949] Adapted for the fork: the stream transport keeps
-// its own tuned RHT (60s, see InitHttpClient); this value covers the
-// non-stream transport and both proxy transports, which had no header wait
-// bound at all and were the remaining unbounded-hang exposure.
-var RelayResponseHeaderTimeout int // unit is second
 var RelayMaxIdleConns int
 var RelayMaxIdleConnsPerHost int
 
