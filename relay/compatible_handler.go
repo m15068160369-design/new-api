@@ -94,6 +94,10 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 
 	var requestBody io.Reader
 
+	// [patch lou #21] outbound body storage 的提前释放句柄（成功路径200确认后
+	// 即调用 Close；defer 兜底保留，Close 幂等安全）。
+	var outboundCloser io.Closer
+
 	if passThroughGlobal || info.ChannelSetting.PassThroughBodyEnabled {
 		storage, err := common.GetBodyStorage(c)
 		if err != nil {
@@ -180,6 +184,7 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 			return types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())
 		}
 		defer closer.Close()
+		outboundCloser = closer // [patch lou #21] 提前释放句柄
 		jsonData = nil
 		info.UpstreamRequestBodySize = size
 		requestBody = body
@@ -202,6 +207,14 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 			service.ResetStatusCode(newApiErr, statusCodeMappingStr)
 			return newApiErr
 		}
+		// [patch lou #21] T7 首字节即释放（流式）：响应头已确认 event-stream，流式
+		// handler 对中途错误一律吞掉并返回 nil error（relay-openai.go OaiStreamHandler
+		// return usage, nil），200+流式后不存在任何重试路径——出站与入站 body 的
+		// 内存使命此刻全部结束。非流式走 DoResponse 成功后释放（错误路径保留 raw
+		// 供主循环重试）。Close 全部幂等，defer 与收尾 cleanup 双兜底。
+		if info.IsStream {
+			releaseUpstreamRequestResources(c, outboundCloser)
+		}
 	}
 
 	usage, newApiErr := adaptor.DoResponse(c, httpResp, info)
@@ -209,6 +222,12 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 		// reset status code 重置状态码
 		service.ResetStatusCode(newApiErr, statusCodeMappingStr)
 		return newApiErr
+	}
+
+	// [patch lou #21] 非流式释放点：DoResponse 成功即响应体完整落定，此后仅有
+	// 计费与收尾（只读 info 的 int 字段与 usage，无 body 读者——已审计）。
+	if !info.IsStream {
+		releaseUpstreamRequestResources(c, outboundCloser)
 	}
 
 	var containAudioTokens = usage.(*dto.Usage).CompletionTokenDetails.AudioTokens > 0 || usage.(*dto.Usage).PromptTokensDetails.AudioTokens > 0
@@ -220,4 +239,26 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 		service.PostTextConsumeQuota(c, info, usage.(*dto.Usage), nil)
 	}
 	return nil
+}
+
+// releaseUpstreamRequestResources [patch lou #21] T7 提前释放：关闭出站 body
+// storage（若有）与入站 raw body storage，并清理 gin context 上的残留引用。
+// 所有 Close 均幂等（memoryStorage/diskStorage 的 CAS 设计），defer closer 与
+// 收尾 BodyStorageCleanup 中间件保留作为最终兜底。调用前提：调用方已确认此后
+// 不存在重试路径（流式=200+event-stream；非流式=DoResponse 成功）。
+func releaseUpstreamRequestResources(c *gin.Context, outboundCloser io.Closer) {
+	if outboundCloser != nil {
+		_ = outboundCloser.Close()
+	}
+	if v, exists := c.Get(common.KeyBodyStorage); exists && v != nil {
+		if bs, ok := v.(common.BodyStorage); ok {
+			_ = bs.Close()
+		}
+		c.Set(common.KeyBodyStorage, nil)
+		if c.Request != nil {
+			// 断开 relay.go 重挂的 io.NopCloser(bodyStorage) 引用链；
+			// NoBody 读取即 EOF，后续任何读者安全失败而非读到已释放数据。
+			c.Request.Body = http.NoBody
+		}
+	}
 }
