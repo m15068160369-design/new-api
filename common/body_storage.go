@@ -67,6 +67,11 @@ func (m *memoryStorage) Close() error {
 	defer m.mu.Unlock()
 	if atomic.CompareAndSwapInt32(&m.closed, 0, 1) {
 		DecrementMemoryBuffers(m.size)
+		// [backport upstream PR#8204] Drop the backing-buffer references so a
+		// closed-but-still-referenced storage (e.g. left on gin Keys until the
+		// cleanup middleware runs) no longer pins the body bytes in the heap.
+		m.data = nil
+		m.reader = nil
 	}
 	return nil
 }
