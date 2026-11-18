@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
@@ -58,21 +59,22 @@ func InitHttpClient() {
 	// 非流式：不设首字节超时(RHT=0)，保持原状不主动切，靠上游自断/客户端超时
 	// 理由：非流占31%先不动观察；流式占69%收益大(RHT60s+STREAMING_TIMEOUT30)零误杀
 	nonStreamTransport := &http.Transport{
-		MaxIdleConns:           common.RelayMaxIdleConns,
-		MaxIdleConnsPerHost:    common.RelayMaxIdleConnsPerHost,
-		IdleConnTimeout:        time.Duration(common.RelayIdleConnTimeout) * time.Second,
-		ForceAttemptHTTP2:      true,
-		Proxy:                  http.ProxyFromEnvironment, // Support HTTP_PROXY, HTTPS_PROXY, NO_PROXY env vars
+		MaxIdleConns:          common.RelayMaxIdleConns,
+		MaxIdleConnsPerHost:   common.RelayMaxIdleConnsPerHost,
+		IdleConnTimeout:       time.Duration(common.RelayIdleConnTimeout) * time.Second,
+		ResponseHeaderTimeout: relayResponseHeaderTimeout(), // [backport upstream #6949] 0=禁用保持旧行为; 默认1800s兜住上游挂死
+		ForceAttemptHTTP2:     true,
+		Proxy:                 http.ProxyFromEnvironment, // Support HTTP_PROXY, HTTPS_PROXY, NO_PROXY env vars
 	}
 	// 流式：等首字节超 60s 断（首字节正常秒级返回，60s 仅掐挂起，零误杀）
 	// 刻意不设 client.Timeout：流式总时长不受限，吐字间隔由 STREAMING_TIMEOUT 管
 	streamTransport := &http.Transport{
-		MaxIdleConns:           common.RelayMaxIdleConns,
-		MaxIdleConnsPerHost:    common.RelayMaxIdleConnsPerHost,
-		IdleConnTimeout:        time.Duration(common.RelayIdleConnTimeout) * time.Second,
-		ResponseHeaderTimeout:  60 * time.Second,
-		ForceAttemptHTTP2:      true,
-		Proxy:                  http.ProxyFromEnvironment,
+		MaxIdleConns:          common.RelayMaxIdleConns,
+		MaxIdleConnsPerHost:   common.RelayMaxIdleConnsPerHost,
+		IdleConnTimeout:       time.Duration(common.RelayIdleConnTimeout) * time.Second,
+		ResponseHeaderTimeout: 60 * time.Second,
+		ForceAttemptHTTP2:     true,
+		Proxy:                 http.ProxyFromEnvironment,
 	}
 	if common.TLSInsecureSkipVerify {
 		nonStreamTransport.TLSClientConfig = common.InsecureTLSConfig
@@ -110,6 +112,28 @@ func GetHttpClient() *http.Client {
 // 吐字间隔由 STREAMING_TIMEOUT 约束。
 func GetStreamHttpClient() *http.Client {
 	return streamHttpClient
+}
+
+// maxTimeoutSeconds is the largest number of seconds that still converts to a
+// time.Duration without overflowing (~292 years). Clamp before converting:
+// seconds beyond this overflow time.Duration and can wrap into a tiny positive
+// timeout, which would cut every relay request instead of only the stuck ones.
+const maxTimeoutSeconds = int(math.MaxInt64 / int64(time.Second))
+
+// relayResponseHeaderTimeout returns the upstream response-header wait bound
+// for the non-stream and proxy transports. [backport upstream #6949]
+// common.RelayResponseHeaderTimeout == 0 disables it (previous behaviour:
+// wait forever). The stream transport deliberately keeps its own tuned 60s
+// RHT and is not affected by this value.
+func relayResponseHeaderTimeout() time.Duration {
+	seconds := common.RelayResponseHeaderTimeout
+	if seconds <= 0 {
+		return 0
+	}
+	if seconds > maxTimeoutSeconds {
+		seconds = maxTimeoutSeconds
+	}
+	return time.Duration(seconds) * time.Second
 }
 
 // GetSSRFProtectedHTTPClient 返回带拨号时 SSRF 校验的客户端。
@@ -165,11 +189,12 @@ func NewProxyHttpClient(proxyURL string) (*http.Client, error) {
 	switch parsedURL.Scheme {
 	case "http", "https":
 		transport := &http.Transport{
-			MaxIdleConns:        common.RelayMaxIdleConns,
-			MaxIdleConnsPerHost: common.RelayMaxIdleConnsPerHost,
-			IdleConnTimeout:     time.Duration(common.RelayIdleConnTimeout) * time.Second,
-			ForceAttemptHTTP2:   true,
-			Proxy:               http.ProxyURL(parsedURL),
+			MaxIdleConns:          common.RelayMaxIdleConns,
+			MaxIdleConnsPerHost:   common.RelayMaxIdleConnsPerHost,
+			IdleConnTimeout:       time.Duration(common.RelayIdleConnTimeout) * time.Second,
+			ResponseHeaderTimeout: relayResponseHeaderTimeout(), // [backport upstream #6949]
+			ForceAttemptHTTP2:     true,
+			Proxy:                 http.ProxyURL(parsedURL),
 		}
 		if common.TLSInsecureSkipVerify {
 			transport.TLSClientConfig = common.InsecureTLSConfig
@@ -205,10 +230,11 @@ func NewProxyHttpClient(proxyURL string) (*http.Client, error) {
 		}
 
 		transport := &http.Transport{
-			MaxIdleConns:        common.RelayMaxIdleConns,
-			MaxIdleConnsPerHost: common.RelayMaxIdleConnsPerHost,
-			IdleConnTimeout:     time.Duration(common.RelayIdleConnTimeout) * time.Second,
-			ForceAttemptHTTP2:   true,
+			MaxIdleConns:          common.RelayMaxIdleConns,
+			MaxIdleConnsPerHost:   common.RelayMaxIdleConnsPerHost,
+			IdleConnTimeout:       time.Duration(common.RelayIdleConnTimeout) * time.Second,
+			ResponseHeaderTimeout: relayResponseHeaderTimeout(), // [backport upstream #6949]
+			ForceAttemptHTTP2:     true,
 			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 				return dialer.Dial(network, addr)
 			},
